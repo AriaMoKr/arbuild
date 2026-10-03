@@ -1,0 +1,282 @@
+// Finds tables in WebXR scene data (plane-detection / mesh-detection) and decides
+// which one the cube belongs on. Pure math on plain numbers: no three.js and no
+// WebXR objects beyond what callers pass in, so it runs under `node --test`.
+//
+// Conventions this code relies on (see README "How it works"):
+// - Matrices are column-major 4x4 arrays, exactly XRRigidTransform.matrix.
+// - Plane polygons lie in planeSpace's XZ plane (y = 0). Quest/IWER repeat the first
+//   vertex at the end; the spec doesn't say either way, so both forms are accepted.
+// - The plane normal is planeSpace +Y, but its sign is runtime-specific (Quest points
+//   it *down* for table tops), so "up" always comes from the reference space instead.
+
+export const TABLE_LABELS = ['table', 'desk'];
+
+/** True when a semanticLabel names a table ('desk' is the pre-2023 Quest label; labels may be CSV). */
+export function isTableLabel(label) {
+  if (!label) return false;
+  return label
+    .toLowerCase()
+    .split(',')
+    .some((part) => TABLE_LABELS.includes(part.trim()));
+}
+
+/** Apply a column-major 4x4 matrix to the point (x, y, z). */
+export function transformPoint(m, x, y, z) {
+  return {
+    x: m[0] * x + m[4] * y + m[8] * z + m[12],
+    y: m[1] * x + m[5] * y + m[9] * z + m[13],
+    z: m[2] * x + m[6] * y + m[10] * z + m[14],
+  };
+}
+
+function column(m, i) {
+  return { x: m[i * 4], y: m[i * 4 + 1], z: m[i * 4 + 2] };
+}
+
+/**
+ * Rotation about reference-space +Y that lines an object up with the matrix's most
+ * horizontal local axis. Only yaw is taken: plane frames can be upside down and
+ * mesh frames can be Z-up, so copying the full rotation would tip the cube over.
+ */
+export function yawFromMatrix(m) {
+  // Prefer local X, then Z, then Y: the first one that is mostly horizontal.
+  for (const i of [0, 2, 1]) {
+    const axis = column(m, i);
+    const horizontal = Math.hypot(axis.x, axis.z);
+    if (horizontal > Math.abs(axis.y)) return Math.atan2(-axis.z, axis.x);
+  }
+  return 0;
+}
+
+function samePoint(a, b) {
+  return Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.z - b.z) < 1e-6;
+}
+
+/**
+ * Area-weighted centroid of a polygon in the XZ plane.
+ * Returns { x, z, area } or null for an empty polygon.
+ */
+export function polygonCentroid(points) {
+  let n = points.length;
+  if (n === 0) return null;
+  if (n > 1 && samePoint(points[0], points[n - 1])) n--; // closed loop: drop the repeat
+
+  let twiceArea = 0;
+  let cx = 0;
+  let cz = 0;
+  for (let i = 0; i < n; i++) {
+    const p = points[i];
+    const q = points[(i + 1) % n];
+    const cross = p.x * q.z - q.x * p.z;
+    twiceArea += cross;
+    cx += (p.x + q.x) * cross;
+    cz += (p.z + q.z) * cross;
+  }
+
+  if (Math.abs(twiceArea) < 1e-9) {
+    // Degenerate (a line or a point): fall back to the vertex average.
+    let sx = 0;
+    let sz = 0;
+    for (let i = 0; i < n; i++) {
+      sx += points[i].x;
+      sz += points[i].z;
+    }
+    return { x: sx / n, z: sz / n, area: 0 };
+  }
+  return { x: cx / (3 * twiceArea), z: cz / (3 * twiceArea), area: Math.abs(twiceArea) / 2 };
+}
+
+/** Width (along local X) and depth (along local Z) of a polygon's bounding box. */
+export function polygonExtents(points) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minZ = Math.min(minZ, p.z);
+    maxZ = Math.max(maxZ, p.z);
+  }
+  if (minX > maxX) return { width: 0, depth: 0 };
+  return { width: maxX - minX, depth: maxZ - minZ };
+}
+
+/**
+ * Table top from an XRPlane: its polygon (planeSpace points) and the column-major
+ * planeSpace pose matrix in the reference space.
+ * Returns { center: {x,y,z}, yaw, width, depth, area } or null when the plane isn't
+ * a usable horizontal surface. `center` lies on the table surface.
+ */
+export function tableTopFromPlane(polygon, matrix) {
+  if (!polygon || polygon.length < 3) return null;
+  const normal = column(matrix, 1);
+  if (Math.abs(normal.y) < 0.9) return null; // not horizontal (either sign is fine)
+
+  const centroid = polygonCentroid(polygon);
+  if (!centroid || centroid.area <= 0) return null;
+  const { width, depth } = polygonExtents(polygon);
+  return {
+    center: transformPoint(matrix, centroid.x, 0, centroid.z),
+    yaw: yawFromMatrix(matrix),
+    width,
+    depth,
+    area: centroid.area,
+  };
+}
+
+/**
+ * Table top from an XRMesh volume: flat xyz vertex array (meshSpace) and the
+ * column-major meshSpace pose matrix. The mesh's local axes differ between runtimes
+ * (IWER's table box is Z-up), so everything is measured in the reference space:
+ * the top is the highest point and the centre is the middle of the footprint,
+ * measured along the table's own horizontal axes.
+ */
+export function tableTopFromMesh(vertices, matrix) {
+  if (!vertices || vertices.length < 9) return null;
+  const yaw = yawFromMatrix(matrix);
+  // Unit vectors of the table's footprint frame in the reference space.
+  const ux = { x: Math.cos(yaw), z: -Math.sin(yaw) };
+  const uz = { x: Math.sin(yaw), z: Math.cos(yaw) };
+
+  let maxY = -Infinity;
+  let minU = Infinity;
+  let maxU = -Infinity;
+  let minV = Infinity;
+  let maxV = -Infinity;
+  for (let i = 0; i + 2 < vertices.length; i += 3) {
+    const p = transformPoint(matrix, vertices[i], vertices[i + 1], vertices[i + 2]);
+    maxY = Math.max(maxY, p.y);
+    const u = p.x * ux.x + p.z * ux.z;
+    const v = p.x * uz.x + p.z * uz.z;
+    minU = Math.min(minU, u);
+    maxU = Math.max(maxU, u);
+    minV = Math.min(minV, v);
+    maxV = Math.max(maxV, v);
+  }
+
+  const width = maxU - minU;
+  const depth = maxV - minV;
+  if (!(width > 0 && depth > 0)) return null;
+  const cu = (minU + maxU) / 2;
+  const cv = (minV + maxV) / 2;
+  return {
+    center: { x: cu * ux.x + cv * uz.x, y: maxY, z: cu * ux.z + cv * uz.z },
+    yaw,
+    width,
+    depth,
+    area: width * depth,
+  };
+}
+
+function horizontalDistance(a, b) {
+  return Math.hypot(a.x - b.x, a.z - b.z);
+}
+
+/** Half-angle of the region treated as "in front of you": inside Quest 3's ~±55° horizontal field of view. */
+export const VIEW_HALF_ANGLE = (50 * Math.PI) / 180;
+
+/**
+ * Signed horizontal angle in radians (positive = to the right) from the viewer's
+ * forward direction to `point`. `viewer` is { x, y, z, forward: { x, z } }.
+ * Returns null when the direction is unknown, e.g. while looking straight down.
+ */
+export function bearingTo(point, viewer) {
+  const f = viewer?.forward;
+  if (!f) return null;
+  const dx = point.x - viewer.x;
+  const dz = point.z - viewer.z;
+  if (Math.hypot(f.x, f.z) < 0.2 || Math.hypot(dx, dz) < 1e-6) return null;
+  return Math.atan2(f.x * dz - f.z * dx, f.x * dx + f.z * dz);
+}
+
+/**
+ * Angle in radians between the viewer's 3D forward direction and the direction to
+ * `point` (0 = dead ahead). Returns Infinity when it can't be computed.
+ */
+export function viewAngleTo(point, viewer) {
+  const f = viewer?.forward;
+  if (!f) return Infinity;
+  const dx = point.x - viewer.x;
+  const dy = point.y - viewer.y;
+  const dz = point.z - viewer.z;
+  const lengths = Math.hypot(f.x, f.y ?? 0, f.z) * Math.hypot(dx, dy, dz);
+  if (lengths < 1e-9) return Infinity;
+  const cos = (f.x * dx + (f.y ?? 0) * dy + f.z * dz) / lengths;
+  return Math.acos(Math.min(1, Math.max(-1, cos)));
+}
+
+/** True when `point` is within VIEW_HALF_ANGLE of where the viewer is facing (horizontally). */
+export function isInView(point, viewer) {
+  const bearing = bearingTo(point, viewer);
+  return bearing !== null && Math.abs(bearing) <= VIEW_HALF_ANGLE;
+}
+
+/** Candidates ordered nearest-first by horizontal distance to `viewer` (input order kept on ties or no viewer). */
+export function sortByDistance(candidates, viewer) {
+  if (!viewer) return [...candidates];
+  return candidates
+    .map((c, i) => ({ c, i, d: horizontalDistance(c.top.center, viewer) }))
+    .sort((a, b) => a.d - b.d || a.i - b.i)
+    .map((e) => e.c);
+}
+
+/**
+ * Keeps the cube on one table. When nothing is locked it picks the nearest table in
+ * front of the viewer (or the nearest overall if none is in view); after that the
+ * lock follows the same XRPlane/XRMesh object (`key`), so the cube never jumps
+ * between tables of similar distance. `next()` cycles through tables.
+ *
+ * Cycling counts outward from where the viewer stood when the table was first
+ * locked, not from where they stand now. Otherwise walking up to the cube and
+ * pressing again would bounce between the two nearest tables forever.
+ *
+ * A candidate is { key, top } where `key` is any identity-stable object
+ * (XRPlane/XRMesh objects keep their identity across frames) and `top` comes from
+ * tableTopFromPlane / tableTopFromMesh. `viewer` is { x, y, z, forward?: { x, z } }.
+ */
+export class TableTracker {
+  constructor() {
+    this.lockedKey = null;
+    this.origin = null; // where the viewer stood when the lock was made; fixes the cycle order
+  }
+
+  reset() {
+    this.lockedKey = null;
+    this.origin = null;
+  }
+
+  /** Returns the candidate the cube should sit on this frame, or null. */
+  update(candidates, viewer) {
+    if (this.lockedKey) {
+      const locked = candidates.find((c) => c.key === this.lockedKey);
+      if (locked) {
+        if (!this.origin && viewer) this.origin = { x: viewer.x, z: viewer.z }; // no pose when the lock was made
+        return locked;
+      }
+      this.lockedKey = null; // that table went away: pick again
+    }
+    if (candidates.length === 0) return null;
+    const ordered = sortByDistance(candidates, viewer);
+    const chosen = ordered.find((c) => isInView(c.top.center, viewer)) ?? ordered[0];
+    this.lockedKey = chosen.key;
+    this.origin = viewer ? { x: viewer.x, z: viewer.z } : null;
+    return chosen;
+  }
+
+  /** Lock onto the next table, going outward from the lock origin and wrapping. Returns it, or null. */
+  next(candidates, viewer) {
+    if (candidates.length === 0) return null;
+    const ordered = sortByDistance(candidates, this.origin ?? viewer);
+    const current = ordered.findIndex((c) => c.key === this.lockedKey);
+    const chosen = ordered[(current + 1) % ordered.length];
+    this.lockedKey = chosen.key;
+    if (!this.origin && viewer) this.origin = { x: viewer.x, z: viewer.z };
+    return chosen;
+  }
+
+  /** 0-based position of the locked table in the cycle order (outward from the lock origin), or -1. */
+  indexOf(candidates, viewer) {
+    return sortByDistance(candidates, this.origin ?? viewer).findIndex((c) => c.key === this.lockedKey);
+  }
+}

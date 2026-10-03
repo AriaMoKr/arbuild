@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Table Cube</title>
+  </head>
+  <body>
+    <main class="card">
+      <h1>Table Cube</h1>
+      <p class="lede">Passthrough AR for Meta Quest 3: puts a cube at the centre of your table.</p>
+
+      <button id="enter-ar" type="button" disabled>Checking…</button>
+      <p id="status" role="status" aria-live="polite" data-tone="info">Checking for WebXR support…</p>
+
+      <h2>Before you start</h2>
+      <ol>
+        <li>Your room scan needs a table. In the headset: <b>Settings › Physical space › Space setup</b>. Quest 3 usually finds tables by itself; if not, add one and label it <b>Table</b>.</li>
+        <li>When the browser asks about <b>spatial data</b>, choose <b>Allow</b>. The app reads your room setup to find the table. If it also asks about <b>hand tracking</b>, allow it to use pinch; controllers work either way.</li>
+      </ol>
+
+      <h2>In AR</h2>
+      <ul>
+        <li>The cube lands on the nearest table in front of you. If it's elsewhere, the panel says which way to look.</li>
+        <li>Several tables? <b>Pull the trigger</b> or <b>pinch</b> to move the cube to the next one.</li>
+        <li>No table found? Pull the trigger or pinch to open Space Setup.</li>
+      </ul>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

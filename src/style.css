@@ -1,0 +1,108 @@
+:root {
+  --bg: #0f1116;
+  --card: #181b22;
+  --text: #e8ebf2;
+  --muted: #9aa3b5;
+  --accent: #3d7bff;
+  --accent-hover: #5a8fff;
+  --error: #ff7a7a;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 17px/1.55 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+}
+
+/* The WebGL canvas only draws while presenting; keep it out of the 2D page. */
+#xr-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.card {
+  width: min(640px, 100%);
+  background: var(--card);
+  border-radius: 20px;
+  padding: 32px clamp(20px, 5vw, 40px);
+  box-shadow: 0 20px 60px rgb(0 0 0 / 0.35);
+}
+
+h1 {
+  margin: 0 0 4px;
+  font-size: 2rem;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  margin: 28px 0 8px;
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.lede {
+  margin: 0 0 24px;
+  color: var(--muted);
+}
+
+ol,
+ul {
+  margin: 0;
+  padding-left: 1.3em;
+}
+
+li + li {
+  margin-top: 6px;
+}
+
+#enter-ar {
+  display: block;
+  width: 100%;
+  padding: 18px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 1.25rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#enter-ar:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+#enter-ar:disabled {
+  background: #2a2f3a;
+  color: var(--muted);
+  cursor: default;
+}
+
+#status {
+  min-height: 1.55em;
+  margin: 12px 0 0;
+  color: var(--muted);
+}
+
+#status[data-tone='error'] {
+  color: var(--error);
+}
