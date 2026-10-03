@@ -268,6 +268,48 @@ const scenarios = {
     return shots.join(', ');
   },
 
+  async 'meeting room: right stick spins the cube, holding A changes its colour'(browser, base) {
+    await openApp(browser, base, 'emulate=1&env=meeting_room');
+    const start = await enterAR(browser);
+    const right = 'window.__iwer.xrDevice.controllers.right';
+    const hold = (ms) => `new Promise((r) => setTimeout(r, ${ms}))`;
+
+    // Full right for 1 s: clockwise (negative), roughly 45 degrees at the slow max speed.
+    await browser.evaluate(`(async () => { ${right}.updateAxes('thumbstick', 1, 0); await ${hold(1000)}; ${right}.updateAxes('thumbstick', 0, 0); await ${hold(100)}; })()`);
+    const afterRight = await snapshot(browser);
+    const turned = afterRight.cube.spin - start.cube.spin;
+    if (!(turned < -0.4 && turned > -1.6)) throw new Error(`stick right turned ${turned.toFixed(3)} rad`);
+    if (afterRight.cube.color !== start.cube.color) throw new Error('colour changed without A');
+    await sleep(400);
+    if ((await snapshot(browser)).cube.spin !== afterRight.cube.spin) throw new Error('cube kept spinning after the stick was released');
+
+    // Full left for 0.5 s spins back the other way.
+    await browser.evaluate(`(async () => { ${right}.updateAxes('thumbstick', -1, 0); await ${hold(500)}; ${right}.updateAxes('thumbstick', 0, 0); await ${hold(100)}; })()`);
+    const afterLeft = await snapshot(browser);
+    if (!(afterLeft.cube.spin > afterRight.cube.spin + 0.2)) throw new Error(`stick left: spin ${afterRight.cube.spin} -> ${afterLeft.cube.spin}`);
+
+    // Holding A cycles the colour; releasing keeps the colour it reached.
+    await browser.evaluate(`(async () => { ${right}.updateButtonValue('a-button', 1); await ${hold(1000)}; ${right}.updateButtonValue('a-button', 0); await ${hold(100)}; })()`);
+    const afterA = await snapshot(browser);
+    if (afterA.cube.color === start.cube.color) throw new Error(`colour unchanged after holding A (${afterA.cube.color})`);
+    if (afterA.cube.spin !== afterLeft.cube.spin) throw new Error('A button spun the cube');
+    await sleep(400);
+    if ((await snapshot(browser)).cube.color !== afterA.cube.color) throw new Error('colour kept changing after A was released');
+
+    await browser.evaluate(`(() => {
+      const d = window.__iwer.xrDevice;
+      d.position.set(0.07, 1.3, -0.55);
+      const pitch = -38 * Math.PI / 180;
+      d.quaternion.set(Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2));
+    })()`);
+    await sleep(800);
+    const shot = await browser.screenshot('meeting_room-spun-and-recoloured');
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    assertNoProblems(browser);
+    return `spin ${start.cube.spin.toFixed(2)} → ${afterRight.cube.spin.toFixed(2)} → ${afterLeft.cube.spin.toFixed(2)} rad, colour ${start.cube.color} → ${afterA.cube.color}; ${shot}`;
+  },
+
   async 'living room: nearest of four tables, trigger cycles through all'(browser, base) {
     await openApp(browser, base, 'emulate=1&env=living_room');
     let s = await enterAR(browser);

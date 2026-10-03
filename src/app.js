@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { StatusPanel } from './statusPanel.js';
+import { nextHue, readRightController, spinVelocity } from './controllerInput.js';
 import {
   TableTracker,
   bearingTo,
@@ -64,6 +65,9 @@ export function initApp() {
 
   const { anchor, cube } = createTableCube();
   scene.add(anchor);
+  // Cube look, driven by the right controller: thumbstick spins it, holding A cycles the hue.
+  const cubeHsl = cube.material.color.getHSL({ h: 0, s: 0, l: 0 }, THREE.SRGBColorSpace);
+  let spinDirection = -1;
 
   const panel = new StatusPanel(renderer);
   scene.add(panel.mesh);
@@ -229,6 +233,8 @@ export function initApp() {
       run.lockedKey = null;
     }
 
+    applyControllerInput(readRightController(xrSession.inputSources), dt);
+
     run.state = describeState({
       table,
       time,
@@ -262,6 +268,17 @@ export function initApp() {
     // Quest reports each table twice (top plane + volume mesh); planes are exact,
     // meshes are only a fallback for when planes aren't available.
     return { candidates: planes.length > 0 ? planes : meshes, sceneObjectCount };
+  }
+
+  function applyControllerInput(controller, dt) {
+    if (!controller) return;
+    const spin = spinVelocity(controller.stick, spinDirection);
+    spinDirection = spin.direction;
+    cube.rotation.y += spin.velocity * dt; // about the cube's own vertical axis, on top of the table's yaw
+    if (controller.aPressed) {
+      cubeHsl.h = nextHue(cubeHsl.h, dt); // the colour stays where it is when A is released
+      cube.material.color.setHSL(cubeHsl.h, cubeHsl.s, cubeHsl.l, THREE.SRGBColorSpace);
+    }
   }
 
   function cubeEdge(top) {
@@ -313,6 +330,7 @@ export function initApp() {
         const count = run.candidates.length;
         const lines = [];
         if (run.seenAt === null) lines.push(directionHint(cubeCentre(table.top)));
+        lines.push('Right stick spins it. Hold A to change colour.');
         if (count > 1) {
           lines.push('Pull the trigger or pinch for the next table.');
           const index = tracker.indexOf(run.candidates, run.viewer) + 1;
@@ -367,6 +385,8 @@ export function initApp() {
         position: cube.getWorldPosition(new THREE.Vector3()).toArray(),
         edge: CUBE_EDGE * anchor.scale.x,
         yaw: anchor.rotation.y,
+        spin: cube.rotation.y,
+        color: `#${cube.material.color.getHexString(THREE.SRGBColorSpace)}`,
       },
       panel: panel.mesh.visible ? panel.key : null,
       enabledFeatures: renderer.xr.getSession()?.enabledFeatures ?? null,
