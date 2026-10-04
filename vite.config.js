@@ -15,14 +15,15 @@ const HOSTNAME = os.hostname().toLowerCase();
 const ALLOWED_HOSTS = [HOSTNAME, `${HOSTNAME}.local`];
 
 export default defineConfig(({ mode }) => {
-  // scripts/e2e.mjs starts its own server in 'e2e' mode: no extra port, no debug log.
+  // scripts/e2e.mjs starts its own server in 'e2e' mode: no extra port, and the debug log
+  // goes to e2e-output/ (where the test reads it) instead of logs/.
   const e2e = mode === 'e2e';
   return {
     base: './', // relative asset URLs, so dist/ works from any static host or sub-path
     plugins: [
       basicSsl({ name: 'quest-table-cube', ttlDays: 365 }),
       ...(e2e ? [] : [plainHttp({ port: HTTP_PORT })]),
-      debugLog({ file: 'logs/quest-debug.jsonl', enabled: !e2e }), // see src/debugChannel.js
+      debugLog({ file: e2e ? 'e2e-output/debug-log.jsonl' : 'logs/quest-debug.jsonl' }), // see src/debugChannel.js
       siteVersion({ sources: ['index.html', 'src'] }), // ./__version.json: "Updated …" on the page and in AR
     ],
     server: {

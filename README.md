@@ -41,7 +41,7 @@ The app uses the room model from Space Setup, not live camera detection. In the 
 
 ## Using the app
 
-The dig site goes on the nearest table in front of you, or the nearest table overall if none is in front of you. It lines up with the table's edges and is turned to face you. Until you've looked at it, the panel tells you which way to turn.
+The dig site goes on the nearest table, preferring one in front of you when it's about as close (a table you're not facing counts as 1.5 m further away). While the room's tables are still arriving at the start of a session the app keeps re-picking, until you choose a table yourself or slide or spin the site. It lines up with the table's edges and is turned to face you. Until you've looked at it, the panel tells you which way to turn.
 
 | You see | What to do |
 | --- | --- |
@@ -52,7 +52,7 @@ The dig site goes on the nearest table in front of you, or the nearest table ove
 | Left thumbstick | Push it to slide the dig site across the table: forward moves it away from you, right moves it to your right, whichever way the table is turned. It stops at the table's edge. Moving to another table puts it back at that table's centre. |
 | Right thumbstick | Push it to spin the dig site slowly: right turns it clockwise, left anticlockwise, and the further you push the faster it turns. |
 | Hold **A** | The excavator's paint cycles through colours while you hold it, and keeps the colour it reached when you let go. |
-| The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload page** reloads the app (handy after a code change, since the browser's own controls are out of reach in AR). Its bottom line shows when the app's files last changed ("Updated …"), the same as at the bottom of the page, so you can tell whether the headset is running the latest version. |
+| The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload page** reloads the app (handy after a code change, since the browser's own controls are out of reach in AR). Its bottom line shows when the app's files last changed ("Updated …"), the same as under the title on the page, so you can tell whether the headset is running the latest version. |
 | Pinch does nothing | Use a controller trigger, or allow hand tracking from the same site-info icon and reload. |
 
 To leave AR, use **Exit AR** on the menu above your left hand, or press the Meta button: Quest Browser shows controls near the address bar to resume or quit the immersive session. If something prevented the dig site from appearing, the page repeats what to fix after you leave AR.
@@ -71,7 +71,7 @@ Query parameters (dev server only):
 
 ### Debug log
 
-In dev builds, the page sends its console output, uncaught errors and a snapshot of the app's state back to the dev server, which appends them to `logs/quest-debug.jsonl` (one JSON object per line). That works from the headset too, with no USB cable. The snapshot covers detected tables, placement, frame rate and controllers, and is sent whenever something changes and every 10 s during AR. Errors and warnings from the page are also printed in the `npm run dev` terminal. Add `?debug=0` to the URL to turn it off. None of this is in `npm run build`.
+In dev builds, the page sends its console output, uncaught errors and a snapshot of the app's state back to the dev server, which appends them to `logs/quest-debug.jsonl` (one JSON object per line). That works from the headset too, with no USB cable. The snapshot covers detected tables, placement, frame rate and controllers, and is sent whenever something changes and every 10 s during AR. Errors and warnings from the page are also printed in the `npm run dev` terminal. It also records which table was picked and why (`[tables] …`) and every menu button press (`[menu] …`). Add `?debug=0` to the URL to turn it off. None of this is in `npm run build`.
 
 Tests:
 
@@ -87,7 +87,7 @@ npm run test:e2e  # headless Chrome + emulator: checks the dig site lands on the
 1. **Session.** `navigator.xr.requestSession('immersive-ar')` with `local-floor`, `plane-detection`, `mesh-detection` and `hand-tracking` as *optional* features. Making them optional means a denied permission doesn't block AR; the app checks `session.enabledFeatures` and explains what's missing instead. three.js renders with a transparent clear, so passthrough shows behind the dig site.
 2. **Finding tables.** Every frame, the app reads `frame.detectedPlanes` and keeps horizontal planes whose `semanticLabel` is `table` (or the older `desk`). If there are no such planes, it falls back to `frame.detectedMeshes` (Quest also exposes each table as a box volume).
 3. **Centre of the table.** The table top's polygon is in plane space. The app takes its area-weighted centroid and transforms it into the reference space. It never trusts the direction of the plane's normal: on Quest the table plane's +Y axis points *down*, so the dig site is lifted along the reference space's up axis. Only the plane's yaw is copied, so the site lines up with the table edges.
-4. **Which table.** The app picks the nearest table in front of you once (the nearest overall if none is in view), then stays locked on that `XRPlane` object, so the dig site doesn't jump when you walk around. Trigger or pinch cycles through the tables, ordered by distance from where you stood when the first one was picked.
+4. **Which table.** The app picks the nearest table, counting tables outside your view 1.5 m further away, then stays locked on that `XRPlane` object, so the dig site doesn't jump when you walk around. Quest delivers the room's tables over the first frames, so that first pick is provisional: it's made again whenever the set of tables changes, until you press the trigger, slide or spin. Trigger or pinch cycles through the tables, ordered by distance from where you stood when the table was picked.
 5. **Messages.** Quest Browser has no DOM overlay in AR, so status text is drawn on a canvas panel that follows your head.
 
 The geometry and selection logic lives in [src/tableLocator.js](src/tableLocator.js) and has no three.js or browser dependency.

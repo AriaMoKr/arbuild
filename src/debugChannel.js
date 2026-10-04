@@ -37,11 +37,14 @@ export function startDebugChannel() {
     push('error', { message: `Unhandled rejection: ${describe(e.reason)}`, stack: e.reason?.stack }),
   );
 
+  const payload = (entries) =>
+    JSON.stringify({ ua: navigator.userAgent, emulated: Boolean(window.__iwer), page: location.href, entries });
+
   async function flush() {
     if (sending || queue.length === 0) return;
     sending = true;
     const entries = queue.splice(0);
-    const body = JSON.stringify({ ua: navigator.userAgent, emulated: Boolean(window.__iwer), page: location.href, entries });
+    const body = payload(entries);
     try {
       // keepalive lets the last batch out when the page unloads, but it caps the body at 64 kB.
       await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body, keepalive: body.length < 60000 });
@@ -81,9 +84,16 @@ export function startDebugChannel() {
   });
   setInterval(sample, SAMPLE_MS);
   setInterval(flush, FLUSH_MS);
+  // Leaving or reloading the page: send whatever is queued with sendBeacon, which the
+  // browser delivers even after the page is gone (a flush already in flight is no reason
+  // to drop the rest, e.g. the "[menu] reload pressed" line).
   window.addEventListener('pagehide', () => {
     sample();
-    flush();
+    if (queue.length === 0) return;
+    const body = payload(queue.splice(0));
+    if (!navigator.sendBeacon?.(ENDPOINT, new Blob([body], { type: 'application/json' }))) {
+      fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body, keepalive: true }).catch(() => {});
+    }
   });
   flush();
 

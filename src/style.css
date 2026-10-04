@@ -107,11 +107,11 @@ li + li {
   color: var(--error);
 }
 
+/* "Updated …" sits right under the subtitle, so it's visible on the Quest without scrolling. */
 .version {
-  margin: 24px 0 0;
+  margin: -14px 0 20px;
   font-size: 0.85rem;
   color: var(--muted);
-  text-align: right;
 }
 
 .version:empty {

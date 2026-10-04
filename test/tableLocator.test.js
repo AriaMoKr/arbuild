@@ -4,6 +4,7 @@ import {
   TableTracker,
   bearingTo,
   isTableLabel,
+  pickTable,
   polygonCentroid,
   polygonExtents,
   quarterTurnToward,
@@ -264,11 +265,14 @@ test('TableTracker.next cycles outward through every table and wraps', () => {
 
 test('TableTracker keys on object identity across frames', () => {
   const plane = { name: 'p' };
+  const other = { name: 'other' };
+  const viewer = { x: 0, y: 1.6, z: 0 };
   const tracker = new TableTracker();
-  tracker.update([{ key: plane, top: { center: { x: 0, y: 0.7, z: -1 } } }], null);
-  // Next frame: fresh candidate objects, same XRPlane.
+  tracker.update([{ key: plane, top: { center: { x: 0, y: 0.7, z: -1 } } }, { key: other, top: { center: { x: 0, y: 0.7, z: -3 } } }], viewer);
+  // Next frame: fresh candidate objects for the same XRPlanes, and the user is now nearer the other one.
   const moved = { key: plane, top: { center: { x: 0.01, y: 0.7, z: -1 } } };
-  assert.equal(tracker.update([candidate('other', 0, -0.5), moved], { x: 0, y: 1.6, z: 0 }), moved);
+  const result = tracker.update([{ key: other, top: { center: { x: 0, y: 0.7, z: -3 } } }, moved], { x: 0, y: 1.6, z: -2.8 });
+  assert.equal(result, moved);
 });
 
 test('TableTracker cycle order is fixed where the lock was made, so walking up to the site still visits every table', () => {
@@ -296,9 +300,9 @@ test('TableTracker cycle order is fixed where the lock was made, so walking up t
   assert.deepEqual(indices, [0, 1, 2, 3, 0]);
 });
 
-test('TableTracker prefers the nearest table in front of the viewer for the first pick', () => {
+test('TableTracker prefers a table in front of the viewer when it is about as close', () => {
   const behind = candidate('behind', 0, 1); // 1 m behind (viewer faces -Z)
-  const ahead = candidate('ahead', 0.3, -2.5); // farther, but in view
+  const ahead = candidate('ahead', 0.3, -2); // 2 m away, but in view: 2.0 beats 1 + OUT_OF_VIEW_PENALTY
   const tracker = new TableTracker();
   const facingForward = { x: 0, y: 1.6, z: 0, forward: { x: 0, y: 0, z: -1 } };
   assert.equal(tracker.update([behind, ahead], facingForward), ahead);
@@ -310,6 +314,62 @@ test('TableTracker prefers the nearest table in front of the viewer for the firs
   const facingAway = { x: 0, y: 1.6, z: 0, forward: { x: 1, y: 0, z: 0 } };
   assert.equal(new TableTracker().update([behind, ahead], facingAway), behind);
   assert.equal(new TableTracker().update([behind, ahead], { x: 0, y: 1.6, z: 0 }), behind);
+});
+
+test('pickTable never prefers a far table just because it is in view', () => {
+  // The Quest 3 room from the debug log: four tables within 1.5 m, two about 9.5 m away
+  // in another room. Facing the far ones, a near table beside the user must still win.
+  const viewer = { x: 0, y: 1.2, z: 0, forward: { x: 0.7, y: 0, z: -0.71 } };
+  const tables = [
+    candidate('far-a', 7.593, -5.371),
+    candidate('far-b', 6.736, -6.821),
+    candidate('desk', -0.404, -0.715),
+    candidate('side', 0.779, 0.422),
+    candidate('back', 0.751, 1.399),
+    candidate('near', 0.548, -0.366),
+  ];
+  assert.equal(pickTable(tables, viewer).key.name, 'near');
+  // The old rule ("nearest table in view") picked the far one here: only it is in view,
+  // and the table 0.9 m away is 74 degrees off to the side.
+  assert.equal(pickTable([tables[1], tables[3]], viewer).key.name, 'side');
+  // Facing a near table makes it win over a slightly nearer one out of view.
+  const facingDesk = { x: 0, y: 1.2, z: 0, forward: { x: -0.5, y: 0, z: -0.87 } };
+  assert.equal(pickTable(tables, facingDesk).key.name, 'desk');
+  assert.equal(pickTable([], viewer), null);
+  assert.equal(pickTable(tables, null).key.name, 'far-a'); // no viewer yet: first candidate
+});
+
+test('TableTracker re-picks while tables are still arriving, until the user takes control', () => {
+  const viewer = { x: 0, y: 1.2, z: 0 };
+  const far = candidate('far', 6.7, -6.8);
+  const nearA = candidate('nearA', 0.5, -0.4);
+  const nearB = candidate('nearB', -0.4, -0.7);
+
+  const tracker = new TableTracker();
+  assert.equal(tracker.update([far], viewer), far); // only the far table has arrived
+  assert.equal(tracker.reason, 'first');
+  assert.equal(tracker.update([far, nearB], viewer), nearB); // more arrive: pick again
+  assert.equal(tracker.reason, 'tables changed');
+  assert.equal(tracker.update([far, nearB, nearA], viewer), nearA);
+  assert.equal(tracker.update([far, nearB, nearA], viewer), nearA); // settled: stays
+  assert.equal(tracker.provisional, true);
+
+  // Sliding or spinning the site confirms the table: later arrivals don't move it.
+  const confirmed = new TableTracker();
+  confirmed.update([far, nearB], viewer);
+  confirmed.confirm();
+  assert.equal(confirmed.update([far, nearB, nearA], viewer), nearB);
+
+  // So does choosing a table with the trigger.
+  const chosen = new TableTracker();
+  chosen.update([far, nearB], viewer);
+  assert.equal(chosen.next([far, nearB], viewer), far);
+  assert.equal(chosen.reason, 'user');
+  assert.equal(chosen.update([far, nearB, nearA], viewer), far);
+
+  // A confirmed table that goes away is replaced.
+  assert.equal(chosen.update([nearB, nearA], viewer), nearA);
+  assert.equal(chosen.reason, 'table lost');
 });
 
 test('bearingTo is positive to the right, negative to the left, null when undefined', () => {

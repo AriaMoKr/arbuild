@@ -10,6 +10,7 @@
     <main class="card">
       <h1>Table Cube</h1>
       <p class="lede">Passthrough AR for Meta Quest 3: puts a little dig site on your table, with an excavator, its operator, a worker and a pile of rocks.</p>
+      <p id="version" class="version"></p>
 
       <button id="enter-ar" type="button" disabled>Checking…</button>
       <p id="status" role="status" aria-live="polite" data-tone="info">Checking for WebXR support…</p>
@@ -22,14 +23,12 @@
 
       <h2>In AR</h2>
       <ul>
-        <li>The dig site lands on the nearest table in front of you, facing you. If it's elsewhere, the panel says which way to look.</li>
+        <li>The dig site lands on the nearest table (preferring one in front of you), facing you. If it's out of view, the panel says which way to look.</li>
         <li>Several tables? <b>Pull the trigger</b> or <b>pinch</b> to move it to the next one.</li>
         <li>No table found? Pull the trigger or pinch to open Space Setup.</li>
         <li>Push the <b>left thumbstick</b> to slide the dig site around the table, and the <b>right thumbstick</b> to spin it slowly. Hold <b>A</b> to repaint the excavator.</li>
         <li>A small menu floats above your <b>left controller</b> (or left hand): point at it with the right one and pull the trigger to <b>Exit AR</b> or <b>Reload page</b>.</li>
       </ul>
-
-      <p id="version" class="version"></p>
     </main>
     <script type="module" src="/src/main.js"></script>
   </body>

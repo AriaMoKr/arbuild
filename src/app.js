@@ -271,6 +271,7 @@ export function initApp() {
         // A new table starts with the site at its centre, square to the table and facing the user.
         run.offset = { x: 0, z: 0 };
         site.rotation.y = quarterTurnToward(run.viewer, table.top.center, table.top.yaw);
+        logTablePick(table, candidates);
       }
       moveSite(readLeftStick(xrSession.inputSources), table.top, dt);
       placeSite(table.top);
@@ -337,6 +338,7 @@ export function initApp() {
     const spin = spinVelocity(controller.stick, spinDirection);
     spinDirection = spin.direction;
     site.rotation.y += spin.velocity * dt; // about the site's own vertical axis, on top of the table's yaw
+    if (spin.velocity !== 0) tracker.confirm(); // the user is working with this table: keep it
     if (controller.aPressed) {
       paintHsl.h = nextHue(paintHsl.h, dt); // the colour stays where it is when A is released
       paint.color.setHSL(paintHsl.h, paintHsl.s, paintHsl.l, THREE.SRGBColorSpace);
@@ -346,7 +348,16 @@ export function initApp() {
   function moveSite(stick, top, dt) {
     if (!stick) return;
     const heading = run.viewer && viewerHeading(run.viewer.forward, run.viewer.up);
+    const before = run.offset;
     run.offset = slideOnTable(run.offset, stick, heading, top.yaw, slideLimits(top), dt);
+    if (run.offset.x !== before.x || run.offset.z !== before.z) tracker.confirm(); // keep this table
+  }
+
+  // For the debug log: which table was picked and why ('first', 'tables changed', 'table lost', 'user').
+  function logTablePick(table, candidates) {
+    const index = tracker.indexOf(candidates, run.viewer) + 1;
+    const away = run.viewer && Math.hypot(table.top.center.x - run.viewer.x, table.top.center.z - run.viewer.z);
+    console.info(`[tables] ${tracker.reason}: table ${index} of ${candidates.length}${away == null ? '' : `, ${away.toFixed(1)} m away`}`);
   }
 
   // How far the site may move from the table centre and still stand fully on the table
@@ -485,6 +496,7 @@ export function initApp() {
       state: run.state,
       tableCount: run.candidates.length,
       tableIndex: tracker.indexOf(run.candidates, run.viewer),
+      pick: { reason: tracker.reason, provisional: tracker.provisional },
       site: {
         visible: anchor.visible,
         position: anchor.getWorldPosition(new THREE.Vector3()).toArray(), // its base, on the table surface

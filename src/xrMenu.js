@@ -111,6 +111,7 @@ export class XrMenu {
   }
 
   press(id) {
+    console.info(`[menu] ${id} pressed`); // shows up in the debug log, even before a reload
     this.actions[id]?.();
   }
 

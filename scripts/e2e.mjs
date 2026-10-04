@@ -12,6 +12,7 @@ import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'e2e-output');
+const debugLogFile = path.join(outDir, 'debug-log.jsonl'); // written by the dev server in e2e mode
 const SURFACE_GAP = 0.001;
 const TOLERANCE = 0.01; // metres
 
@@ -244,6 +245,18 @@ async function pressTrigger(browser) {
   return snapshot(browser);
 }
 
+/** Waits until the debug log (what the page sent to the dev server) has a console line matching `pattern`. */
+async function waitForDebugLog(pattern, { timeout = 8000 } = {}) {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    const lines = fs.existsSync(debugLogFile) ? fs.readFileSync(debugLogFile, 'utf8').trim().split('\n') : [];
+    const match = lines.map((l) => JSON.parse(l)).find((e) => e.kind === 'console' && pattern.test(e.message));
+    if (match) return match.message;
+    await sleep(200);
+  }
+  throw new Error(`debug log never showed ${pattern}`);
+}
+
 /** Turn the emulated right controller so its ray points at a menu button, and wait for the hover. */
 async function aimAtMenuButton(browser, id) {
   await browser.waitFor(`window.__app.snapshot().menu.buttons.${id}`, { label: `menu button ${id}` });
@@ -463,6 +476,7 @@ const scenarios = {
     if (s.tableIndex !== -1 && s.tableIndex !== table) throw new Error('the Exit AR press also switched tables');
     const status = await browser.evaluate('document.getElementById("status").textContent');
     if (!/Session ended/.test(status)) throw new Error(`status after Exit AR: ${status}`);
+    await waitForDebugLog(/^\[menu\] exit pressed$/);
 
     // Reload page: the page reloads (the marker disappears) and comes back ready.
     await enterAR(browser);
@@ -474,8 +488,48 @@ const scenarios = {
       timeout: 15000,
       label: 'page reloaded',
     });
+    await waitForDebugLog(/^\[menu\] reload pressed$/); // sent as the page unloaded
     assertNoProblems(browser);
     return `${version}; ${shot}`;
+  },
+
+  async 'living room: tables that arrive late still get the dig site'(browser, base) {
+    // On the Quest the room's tables arrive over the first frames, sometimes the far ones
+    // first. Hide every table but the farthest (2.7 m) before entering AR, then add the
+    // same scene entities back: the first pick is provisional, so the site must move to
+    // the nearest table instead of staying where it landed.
+    await openApp(browser, base, 'emulate=1&env=living_room');
+    const hidden = await browser.evaluate(`(() => {
+      const sem = window.__iwer.xrDevice.sem;
+      const late = (e) => e.semanticLabel === 'table' && Math.hypot(e.transform.matrix[12], e.transform.matrix[14]) < 2.5;
+      window.__late = { planes: [...sem.trackedPlanes].filter(late), meshes: [...sem.trackedMeshes].filter(late) };
+      for (const e of window.__late.planes) sem.trackedPlanes.delete(e);
+      for (const e of window.__late.meshes) sem.trackedMeshes.delete(e);
+      return window.__late.planes.length;
+    })()`);
+    if (hidden !== 3) throw new Error(`expected to hold back 3 tables, held back ${hidden}`);
+
+    let s = await enterAR(browser);
+    if (s.tableCount !== 1) throw new Error(`expected 1 table at first, got ${s.tableCount}`);
+    assertNear(s.site.position, siteBaseFor(LIVING_ROOM_TABLES[2]), 'first pick: the only (far) table');
+    if (s.pick.reason !== 'first' || !s.pick.provisional) throw new Error(`first pick: ${JSON.stringify(s.pick)}`);
+    await waitForDebugLog(/^\[tables\] first: table 1 of 1, 2\.7 m away$/);
+
+    await browser.evaluate(`(() => {
+      const sem = window.__iwer.xrDevice.sem;
+      for (const e of window.__late.planes) sem.trackedPlanes.add(e);
+      for (const e of window.__late.meshes) sem.trackedMeshes.add(e);
+    })()`);
+    await browser.waitFor('window.__app.snapshot().tableCount === 4', { label: 'late tables arrived' });
+    s = await snapshot(browser);
+    assertNear(s.site.position, siteBaseFor(LIVING_ROOM_TABLES[0]), 'after the late tables: the nearest one');
+    if (s.pick.reason !== 'tables changed') throw new Error(`pick after late tables: ${JSON.stringify(s.pick)}`);
+    const line = await waitForDebugLog(/^\[tables\] tables changed: /);
+    if (!/table 1 of 4, 1\.3 m away$/.test(line)) throw new Error(`debug log: ${line}`);
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    assertNoProblems(browser);
+    return line;
   },
 
   async 'living room: nearest of four tables, trigger cycles through all'(browser, base) {
@@ -545,9 +599,10 @@ const scenarios = {
 };
 
 fs.mkdirSync(outDir, { recursive: true });
+fs.rmSync(debugLogFile, { force: true }); // the server starts it afresh
 const server = await createServer({
   root,
-  mode: 'e2e', // vite.config.js: no plain-HTTP mirror, nothing written to the debug log
+  mode: 'e2e', // vite.config.js: no plain-HTTP mirror; the debug log goes to e2e-output/debug-log.jsonl
   logLevel: 'warn',
   server: { port: 5199, strictPort: false, host: '127.0.0.1' },
 });

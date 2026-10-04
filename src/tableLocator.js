@@ -236,47 +236,89 @@ export function sortByDistance(candidates, viewer) {
     .map((e) => e.c);
 }
 
+/** How much further away a table outside the view counts when picking one automatically (metres). */
+export const OUT_OF_VIEW_PENALTY = 1.5;
+
 /**
- * Keeps the site on one table. When nothing is locked it picks the nearest table in
- * front of the viewer (or the nearest overall if none is in view); after that the
- * lock follows the same XRPlane/XRMesh object (`key`), so the site never jumps
- * between tables of similar distance. `next()` cycles through tables.
+ * The table to pick automatically: the nearest one, where tables outside the view count
+ * OUT_OF_VIEW_PENALTY further away. A table in front of the user wins over one beside or
+ * behind them only when it's about as close, never one in another room. Without a viewer
+ * the first candidate wins. Returns the candidate or null.
+ */
+export function pickTable(candidates, viewer) {
+  if (candidates.length === 0) return null;
+  if (!viewer) return candidates[0];
+  let best = null;
+  let bestScore = Infinity;
+  for (const c of candidates) {
+    const score = horizontalDistance(c.top.center, viewer) + (isInView(c.top.center, viewer) ? 0 : OUT_OF_VIEW_PENALTY);
+    if (score < bestScore) {
+      best = c;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/**
+ * Keeps the site on one table. The lock follows the same XRPlane/XRMesh object (`key`),
+ * so the site never jumps between tables of similar distance. `next()` cycles through
+ * tables.
  *
- * Cycling counts outward from where the viewer stood when the table was first
- * locked, not from where they stand now. Otherwise walking up to the site and
- * pressing again would bounce between the two nearest tables forever.
+ * The automatic pick (pickTable) is provisional: Quest delivers the room's tables over
+ * the first frames, sometimes the far ones first, so while it stands the tracker picks
+ * again whenever the set of tables changes. Once the user takes control (`next()`, or
+ * `confirm()` when they slide or spin the site) the lock only changes if its table goes
+ * away.
+ *
+ * Cycling counts outward from where the viewer stood when the table was picked, not
+ * from where they stand now. Otherwise walking up to the site and pressing again would
+ * bounce between the two nearest tables forever.
  *
  * A candidate is { key, top } where `key` is any identity-stable object
  * (XRPlane/XRMesh objects keep their identity across frames) and `top` comes from
  * tableTopFromPlane / tableTopFromMesh. `viewer` is { x, y, z, forward?: { x, z } }.
+ * `reason` says why the current lock was made: 'first', 'tables changed', 'table lost'
+ * or 'user'.
  */
 export class TableTracker {
   constructor() {
-    this.lockedKey = null;
-    this.origin = null; // where the viewer stood when the lock was made; fixes the cycle order
+    this.reset();
   }
 
   reset() {
     this.lockedKey = null;
-    this.origin = null;
+    this.origin = null; // where the viewer stood when the lock was made; fixes the cycle order
+    this.provisional = false;
+    this.reason = null;
+    this._seen = new Set(); // the table keys present at the last automatic pick
   }
 
   /** Returns the candidate the site should stand on this frame, or null. */
   update(candidates, viewer) {
+    let reason = 'first';
     if (this.lockedKey) {
       const locked = candidates.find((c) => c.key === this.lockedKey);
-      if (locked) {
+      if (locked && !(this.provisional && this._tablesChanged(candidates))) {
         if (!this.origin && viewer) this.origin = { x: viewer.x, z: viewer.z }; // no pose when the lock was made
         return locked;
       }
-      this.lockedKey = null; // that table went away: pick again
+      reason = locked ? 'tables changed' : 'table lost';
+      this.lockedKey = null;
     }
-    if (candidates.length === 0) return null;
-    const ordered = sortByDistance(candidates, viewer);
-    const chosen = ordered.find((c) => isInView(c.top.center, viewer)) ?? ordered[0];
+    const chosen = pickTable(candidates, viewer);
+    if (!chosen) return null;
     this.lockedKey = chosen.key;
     this.origin = viewer ? { x: viewer.x, z: viewer.z } : null;
+    this.provisional = true;
+    this.reason = reason;
+    this._seen = new Set(candidates.map((c) => c.key));
     return chosen;
+  }
+
+  /** The user took control (slid or spun the site): keep this table even if more tables arrive. */
+  confirm() {
+    this.provisional = false;
   }
 
   /** Lock onto the next table, going outward from the lock origin and wrapping. Returns it, or null. */
@@ -286,6 +328,8 @@ export class TableTracker {
     const current = ordered.findIndex((c) => c.key === this.lockedKey);
     const chosen = ordered[(current + 1) % ordered.length];
     this.lockedKey = chosen.key;
+    this.provisional = false;
+    this.reason = 'user';
     if (!this.origin && viewer) this.origin = { x: viewer.x, z: viewer.z };
     return chosen;
   }
@@ -293,5 +337,9 @@ export class TableTracker {
   /** 0-based position of the locked table in the cycle order (outward from the lock origin), or -1. */
   indexOf(candidates, viewer) {
     return sortByDistance(candidates, this.origin ?? viewer).findIndex((c) => c.key === this.lockedKey);
+  }
+
+  _tablesChanged(candidates) {
+    return candidates.length !== this._seen.size || candidates.some((c) => !this._seen.has(c.key));
   }
 }
