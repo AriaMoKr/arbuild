@@ -310,6 +310,63 @@ const scenarios = {
     return `spin ${start.cube.spin.toFixed(2)} → ${afterRight.cube.spin.toFixed(2)} → ${afterLeft.cube.spin.toFixed(2)} rad, colour ${start.cube.color} → ${afterA.cube.color}; ${shot}`;
   },
 
+  async 'meeting room: left stick slides the cube across the table and stops at its edge'(browser, base) {
+    await openApp(browser, base, 'emulate=1&env=meeting_room');
+    const start = await enterAR(browser);
+    const left = 'window.__iwer.xrDevice.controllers.left';
+    const push = (x, y, ms) =>
+      browser.evaluate(`(async () => {
+        ${left}.updateAxes('thumbstick', ${x}, ${y});
+        await new Promise((r) => setTimeout(r, ${ms}));
+        ${left}.updateAxes('thumbstick', 0, 0);
+        await new Promise((r) => setTimeout(r, 100));
+      })()`);
+    const delta = (a, b) => b.cube.position.map((v, i) => v - a.cube.position[i]);
+
+    // The emulated user faces -Z, so forward (stick y = -1) moves the cube towards -Z at 0.25 m/s.
+    await push(0, -1, 1000);
+    const afterForward = await snapshot(browser);
+    const [fx, fy, fz] = delta(start, afterForward);
+    if (!(fz < -0.15 && fz > -0.4) || Math.abs(fx) > 0.02 || Math.abs(fy) > 1e-6) {
+      throw new Error(`forward push moved the cube by [${fx.toFixed(3)}, ${fy.toFixed(3)}, ${fz.toFixed(3)}]`);
+    }
+
+    // Right moves it towards +X.
+    await push(1, 0, 600);
+    const afterRight = await snapshot(browser);
+    const [rx, , rz] = delta(afterForward, afterRight);
+    if (!(rx > 0.08 && rx < 0.3) || Math.abs(rz) > 0.02) throw new Error(`right push moved the cube by [${rx.toFixed(3)}, ${rz.toFixed(3)}]`);
+    await sleep(300);
+    if (delta(afterRight, await snapshot(browser)).some((v) => Math.abs(v) > 1e-6)) throw new Error('cube drifted after the stick was released');
+
+    // Holding left long enough to cross the whole table stops at the table's edge.
+    await push(-1, 0, 5000);
+    const atEdge = await snapshot(browser);
+    const { offset, limits } = atEdge.cube;
+    if (Math.abs(offset.x) > limits.x + 1e-9 || Math.abs(offset.z) > limits.z + 1e-9) {
+      throw new Error(`cube left the table: offset ${JSON.stringify(offset)}, limits ${JSON.stringify(limits)}`);
+    }
+    const reach = Math.max(Math.abs(offset.x) / limits.x, Math.abs(offset.z) / limits.z);
+    if (Math.abs(reach - 1) > 1e-6) throw new Error(`expected the cube to stop at the edge, got ${reach.toFixed(3)} of the way`);
+    if (Math.abs(atEdge.cube.position[1] - start.cube.position[1]) > 1e-6) throw new Error('cube height changed while sliding');
+
+    const [cx, , cz] = atEdge.cube.position;
+    await browser.evaluate(`(() => {
+      const d = window.__iwer.xrDevice;
+      d.position.set(${cx + 0.35}, 1.3, ${cz + 0.45});
+      const pitch = -40 * Math.PI / 180, yaw = 35 * Math.PI / 180;
+      // yaw about Y, then pitch about X (YXZ), so the view looks down at the cube.
+      const cy = Math.cos(yaw / 2), sy = Math.sin(yaw / 2), cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
+      d.quaternion.set(cy * sp, sy * cp, -sy * sp, cy * cp);
+    })()`);
+    await sleep(800);
+    const shot = await browser.screenshot('meeting_room-slid-to-edge');
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    assertNoProblems(browser);
+    return `forward Δz=${fz.toFixed(3)}, right Δx=${rx.toFixed(3)}, stopped at offset (${offset.x.toFixed(3)}, ${offset.z.toFixed(3)}); ${shot}`;
+  },
+
   async 'living room: nearest of four tables, trigger cycles through all'(browser, base) {
     await openApp(browser, base, 'emulate=1&env=living_room');
     let s = await enterAR(browser);
@@ -322,6 +379,16 @@ const scenarios = {
     const shot = await browser.screenshot('living_room-nearest-table');
 
     const visited = [s.cube.position];
+    // Nudge the cube off-centre with the left stick: the next table must still get it at its centre.
+    await browser.evaluate(`(async () => {
+      const left = window.__iwer.xrDevice.controllers.left;
+      left.updateAxes('thumbstick', 1, -1);
+      await new Promise((r) => setTimeout(r, 500));
+      left.updateAxes('thumbstick', 0, 0);
+      await new Promise((r) => setTimeout(r, 100));
+    })()`);
+    const nudged = (await snapshot(browser)).cube.offset;
+    if (Math.hypot(nudged.x, nudged.z) < 0.05) throw new Error(`left stick didn't move the cube: ${JSON.stringify(nudged)}`);
     for (let i = 1; i <= 4; i++) {
       s = await pressTrigger(browser);
       if (s.tableIndex !== i % 4) throw new Error(`press ${i}: expected index ${i % 4}, got ${s.tableIndex}`);

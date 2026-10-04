@@ -47,6 +47,7 @@ The cube goes on the nearest table in front of you, or the nearest table overall
 | "Table 1 of 3" | Pull the trigger or pinch to move the cube to the next table. Tables are counted outward from where you stood when the cube was first placed. |
 | "No room setup found" / "No table in your room setup" | Pull the trigger or pinch to open Space Setup (once per AR session), or exit and use Settings › Physical space › Space setup. |
 | "Spatial data is blocked" | Exit AR and tap the site-info icon at the left of the address bar. On a normal HTTPS site it's a lock; on the dev server it's a **Not secure** warning. Set spatial data to **Allow**, and reload. |
+| Left thumbstick | Push it to slide the cube across the table: forward moves it away from you, right moves it to your right, whichever way the table is turned. It stops at the table's edge. Moving to another table puts the cube back at that table's centre. |
 | Right thumbstick | Push it to spin the cube slowly: right turns it clockwise, left anticlockwise, and the further you push the faster it turns. |
 | Hold **A** | The cube cycles through colours while you hold it, and keeps the colour it reached when you let go. |
 | Pinch does nothing | Use a controller trigger, or allow hand tracking from the same site-info icon and reload. |

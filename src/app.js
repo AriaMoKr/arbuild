@@ -1,7 +1,16 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { StatusPanel } from './statusPanel.js';
-import { nextHue, readRightController, spinVelocity } from './controllerInput.js';
+import {
+  clampOffset,
+  nextHue,
+  readLeftStick,
+  readRightController,
+  slideOnTable,
+  spinVelocity,
+  tableOffsetToWorld,
+  viewerHeading,
+} from './controllerInput.js';
 import {
   TableTracker,
   bearingTo,
@@ -83,6 +92,7 @@ export function initApp() {
     lockedKey: null,
     lockedAt: 0,
     seenAt: null, // when the cube was first in view since the last table change
+    offset: { x: 0, z: 0 }, // cube position relative to the table centre, in the table's frame (left stick)
     roomCaptureUsed: false,
     state: 'idle',
   };
@@ -145,6 +155,7 @@ export function initApp() {
       lockedKey: null,
       lockedAt: 0,
       seenAt: null,
+      offset: { x: 0, z: 0 },
       roomCaptureUsed: false,
       state: 'scanning',
     });
@@ -210,8 +221,14 @@ export function initApp() {
     const viewerPose = frame.getViewerPose(refSpace);
     if (viewerPose) {
       const p = viewerPose.transform.position;
-      const m = viewerPose.transform.matrix; // forward is the view's -Z axis
-      run.viewer = { x: p.x, y: p.y, z: p.z, forward: { x: -m[8], y: -m[9], z: -m[10] } };
+      const m = viewerPose.transform.matrix;
+      run.viewer = {
+        x: p.x,
+        y: p.y,
+        z: p.z,
+        forward: { x: -m[8], y: -m[9], z: -m[10] }, // the view's -Z axis
+        up: { x: m[4], y: m[5], z: m[6] }, // the view's +Y axis
+      };
     }
 
     const { candidates, sceneObjectCount } = findTables(frame, refSpace);
@@ -219,12 +236,14 @@ export function initApp() {
     const table = tracker.update(candidates, run.viewer);
 
     if (table) {
-      placeCube(table.top);
       if (tracker.lockedKey !== run.lockedKey) {
         run.lockedKey = tracker.lockedKey;
         run.lockedAt = time;
         run.seenAt = null;
+        run.offset = { x: 0, z: 0 }; // a new table starts with the cube at its centre
       }
+      moveCube(readLeftStick(xrSession.inputSources), table.top, dt);
+      placeCube(table.top);
       if (run.seenAt === null && run.viewer && viewAngleTo(cubeCentre(table.top), run.viewer) <= SEEN_ANGLE) {
         run.seenAt = time;
       }
@@ -281,17 +300,42 @@ export function initApp() {
     }
   }
 
+  function moveCube(stick, top, dt) {
+    if (!stick) return;
+    const heading = run.viewer && viewerHeading(run.viewer.forward, run.viewer.up);
+    run.offset = slideOnTable(run.offset, stick, heading, top.yaw, slideLimits(top), dt);
+  }
+
+  // How far the cube may move from the table centre and still sit fully on the table top.
+  function slideLimits(top) {
+    const half = cubeEdge(top) / 2;
+    return { x: Math.max(0, top.width / 2 - half), z: Math.max(0, top.depth / 2 - half) };
+  }
+
+  // Where the anchor goes: the table centre plus the cube's offset, kept on the table
+  // even if the table's outline shrinks.
+  function anchorPosition(top) {
+    const shift = tableOffsetToWorld(clampOffset(run.offset, slideLimits(top)), top.yaw);
+    return { x: top.center.x + shift.x, y: top.center.y + SURFACE_GAP, z: top.center.z + shift.z };
+  }
+
+  function lockedTop() {
+    return run.candidates.find((c) => c.key === tracker.lockedKey)?.top ?? null;
+  }
+
   function cubeEdge(top) {
     return Math.min(CUBE_EDGE, Math.min(top.width, top.depth) * MAX_EDGE_FRACTION);
   }
 
   function cubeCentre(top) {
-    return { x: top.center.x, y: top.center.y + SURFACE_GAP + cubeEdge(top) / 2, z: top.center.z };
+    const base = anchorPosition(top);
+    return { x: base.x, y: base.y + cubeEdge(top) / 2, z: base.z };
   }
 
   function placeCube(top) {
     const edge = cubeEdge(top);
-    anchor.position.set(top.center.x, top.center.y + SURFACE_GAP, top.center.z); // reference-space up
+    const { x, y, z } = anchorPosition(top);
+    anchor.position.set(x, y, z); // lifted along reference-space up, never the plane normal
     anchor.rotation.set(0, top.yaw, 0);
     anchor.scale.setScalar(edge / CUBE_EDGE);
     anchor.visible = true;
@@ -330,7 +374,8 @@ export function initApp() {
         const count = run.candidates.length;
         const lines = [];
         if (run.seenAt === null) lines.push(directionHint(cubeCentre(table.top)));
-        lines.push('Right stick spins it. Hold A to change colour.');
+        lines.push('Left stick moves it, right stick spins it.');
+        lines.push('Hold A to change its colour.');
         if (count > 1) {
           lines.push('Pull the trigger or pinch for the next table.');
           const index = tracker.indexOf(run.candidates, run.viewer) + 1;
@@ -386,6 +431,8 @@ export function initApp() {
         edge: CUBE_EDGE * anchor.scale.x,
         yaw: anchor.rotation.y,
         spin: cube.rotation.y,
+        offset: { ...run.offset },
+        limits: lockedTop() ? slideLimits(lockedTop()) : null,
         color: `#${cube.material.color.getHexString(THREE.SRGBColorSpace)}`,
       },
       panel: panel.mesh.visible ? panel.key : null,
