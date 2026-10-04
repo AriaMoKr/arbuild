@@ -22,14 +22,74 @@ const EYE = 0x1e2124;
 const deg = THREE.MathUtils.degToRad;
 
 /**
- * Builds the dig site. Returns { site, paint, radius, height }: `site` is a group with
- * its footprint centred on the origin and its base at y = 0, in metres; `paint` is the
- * excavator's paint material; `radius` is the horizontal radius (metres) of a circle
- * round the origin that holds the whole footprint, shadows included, whichever way the
- * site is spun; `height` is the tallest point (metres). Shadow meshes are marked with
- * `userData.shadow`.
+ * The excavator's dig cycle, as joint angles (degrees, on top of the modelled pose) at
+ * key times (seconds). Positive boom lowers it, positive arm folds it in towards the
+ * machine, positive bucket curls it shut. Each segment between two keys is one phase,
+ * named after the motion it ends with.
  */
-export function createDigSite() {
+export const DIG_KEYS = [
+  { t: 0, boom: 0, arm: 0, bucket: 0 },
+  { t: 1.4, boom: 6, arm: -10, bucket: -25, phase: 'reach' }, // out over the pile, bucket open
+  { t: 2.4, boom: 2, arm: 2, bucket: 55, phase: 'scoop' }, // drag in and curl: rocks in (teeth stay ~3 mm above the table)
+  { t: 3.6, boom: -14, arm: 10, bucket: 60, phase: 'lift' }, // up with the load
+  { t: 4.6, boom: -10, arm: -12, bucket: -10, phase: 'dump' }, // reach out and open: rocks out
+  { t: 6, boom: 0, arm: 0, bucket: 0, phase: 'return' },
+];
+export const DIG_CYCLE_S = DIG_KEYS[DIG_KEYS.length - 1].t;
+
+/**
+ * Joint angles (radians) at time `t` (seconds, any value: the cycle repeats), eased
+ * within each segment, plus the phase being played and how fast the joints are moving
+ * (0 still .. 1 fastest), for the hydraulics sound.
+ */
+export function digPose(t) {
+  const now = digAngles(t);
+  return { ...now, hydraulics: Math.min(1, jointSpeed(t) / maxJointSpeed()) };
+}
+
+/** Joint angles (radians) and phase at `time`, eased within the segment it falls in. */
+function digAngles(time) {
+  const u = ((time % DIG_CYCLE_S) + DIG_CYCLE_S) % DIG_CYCLE_S;
+  let i = 0;
+  while (i < DIG_KEYS.length - 2 && u >= DIG_KEYS[i + 1].t) i++;
+  const a = DIG_KEYS[i];
+  const b = DIG_KEYS[i + 1];
+  const f = (u - a.t) / (b.t - a.t);
+  const e = f * f * (3 - 2 * f); // smoothstep: start and stop gently
+  const lerp = (key) => deg(a[key] + (b[key] - a[key]) * e);
+  return { boom: lerp('boom'), arm: lerp('arm'), bucket: lerp('bucket'), phase: b.phase };
+}
+
+/** Summed joint speed (rad/s) around time `t`. */
+function jointSpeed(t) {
+  const dt = 1 / 60;
+  const a = digAngles(t - dt);
+  const b = digAngles(t + dt);
+  return (Math.abs(b.boom - a.boom) + Math.abs(b.arm - a.arm) + Math.abs(b.bucket - a.bucket)) / (2 * dt);
+}
+
+let maxSpeed = null;
+function maxJointSpeed() {
+  if (maxSpeed === null) {
+    maxSpeed = 1e-9;
+    for (let i = 0; i < 600; i++) maxSpeed = Math.max(maxSpeed, jointSpeed((i / 600) * DIG_CYCLE_S));
+  }
+  return maxSpeed;
+}
+
+/**
+ * Builds the dig site. Returns { site, paint, radius, height, lowest, armLowest, excavator, animate }: `site`
+ * is a group with its footprint centred on the origin and its base at y = 0, in metres;
+ * `paint` is the excavator's paint material; `radius` is the horizontal radius (metres)
+ * of a circle round the origin that holds the whole footprint, shadows included,
+ * whichever way the site is spun and wherever the dig cycle has the arm; `height` is
+ * the tallest point and `lowest` the lowest solid point over the cycle (metres; the
+ * rocks sit a few mm into the table on purpose), `armLowest` the moving arm's lowest
+ * point (the bucket must never go below the table, 0). `animate(t)` poses the site for time `t`
+ * (seconds) and returns digPose(t). Shadow meshes are marked with `userData.shadow`.
+ * `shadowTexture` defaults to a soft radial gradient (needs a DOM canvas).
+ */
+export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
   const model = new THREE.Group(); // design units
   const paint = new THREE.MeshStandardMaterial({ color: PAINT, roughness: 0.55 });
   const materials = new Map();
@@ -56,6 +116,7 @@ export function createDigSite() {
   const alongZ = [Math.PI / 2, 0, 0];
 
   // A head facing local +Z, turned by `facing` about Y: eyes, a smile and a hard hat.
+  // Returns its group, so it can be turned.
   const head = (parent, position, r, facing) => {
     const g = new THREE.Group();
     g.position.set(...position);
@@ -68,6 +129,7 @@ export function createDigSite() {
     cylinder(g, 1.24 * r, 0.16 * r, 16, HAT, [0, 0.68 * r, 0]); // brim
     const crown = add(g, new THREE.SphereGeometry(1.04 * r, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), HAT, [0, 0.68 * r, 0]);
     crown.scale.y = 0.7;
+    return g;
   };
 
   // ---------- Excavator ----------
@@ -94,17 +156,26 @@ export function createDigSite() {
   const boomFoot = [-85, 210];
   const elbow = [-197, 345];
   const hinge = [-397, 180];
-  beam(excavator, boomFoot, elbow, 34, 40, paint); // boom
-  beam(excavator, elbow, hinge, 30, 34, paint); // arm
-  for (const [[x, y], r, length] of [[boomFoot, 13, 56], [elbow, 12, 50], [hinge, 11, 120]]) {
-    cylinder(excavator, r, length, 8, DARK, [x, y, 0], alongZ); // pivot pins
-  }
+  // The arm is a chain of joints, each turning about Z at its pivot pin: boom (at the
+  // foot), arm (at the elbow), bucket (at the hinge). digPose() drives the angles.
+  const boomJoint = new THREE.Group();
+  boomJoint.position.set(boomFoot[0], boomFoot[1], 0);
+  excavator.add(boomJoint);
+  cylinder(excavator, 13, 56, 8, DARK, [boomFoot[0], boomFoot[1], 0], alongZ); // foot pin
+  beam(boomJoint, [0, 0], [elbow[0] - boomFoot[0], elbow[1] - boomFoot[1]], 34, 40, paint); // boom
+  const armJoint = new THREE.Group();
+  armJoint.position.set(elbow[0] - boomFoot[0], elbow[1] - boomFoot[1], 0);
+  boomJoint.add(armJoint);
+  cylinder(armJoint, 12, 50, 8, DARK, [0, 0, 0], alongZ); // elbow pin
+  beam(armJoint, [0, 0], [hinge[0] - elbow[0], hinge[1] - elbow[1]], 30, 34, paint); // arm
+  cylinder(armJoint, 11, 120, 8, DARK, [hinge[0] - elbow[0], hinge[1] - elbow[1], 0], alongZ); // hinge pin
 
   // Bucket: an open box hanging from the hinge, mouth and teeth toward the rocks.
+  const BUCKET_REST = deg(45);
   const bucket = new THREE.Group();
-  bucket.position.set(hinge[0], hinge[1], 0);
-  bucket.rotation.z = deg(45);
-  excavator.add(bucket);
+  bucket.position.set(hinge[0] - elbow[0], hinge[1] - elbow[1], 0);
+  bucket.rotation.z = BUCKET_REST;
+  armJoint.add(bucket);
   box(bucket, [4, 80, 110], STEEL, [-2, -40, 0]);
   box(bucket, [130, 4, 110], STEEL, [-65, -2, 0]);
   box(bucket, [130, 4, 110], STEEL, [-65, -78, 0]);
@@ -116,7 +187,7 @@ export function createDigSite() {
   box(excavator, [26, 54, 34], shirt, [62, 279, 0]);
   for (const z of [-9, 9]) beam(excavator, [64, 256, z], [32, 258], 12, 13, 0x2b3a55); // thighs
   for (const z of [-16, 16]) beam(excavator, [60, 300, z], [14, 279], 9, 9, shirt); // arms
-  head(excavator, [60, 322, 0], 15, -Math.PI / 2);
+  const operatorHead = head(excavator, [60, 322, 0], 15, -Math.PI / 2);
 
   // ---------- Worker ----------
   const worker = new THREE.Group();
@@ -136,7 +207,7 @@ export function createDigSite() {
     sphere(worker, 8.5, SKIN, [s * 55, 88, 0]);
   }
   box(worker, [16, 10, 16], SKIN, [0, 161, 0]);
-  head(worker, [0, 190, 0], 25, 0);
+  const workerHead = head(worker, [0, 190, 0], 25, 0);
 
   // ---------- Rock pile ----------
   // [x, z, width, height, depth, tilt about X, turn about Y, tilt about Z, colour]
@@ -154,20 +225,54 @@ export function createDigSite() {
   // Soft contact shadows, [x, z, width, depth]: each is the ellipse inscribed in that box.
   const shadows = [[190, -30, 380, 220], [-225, -30, 160, 130], [-380, 55, 220, 170], [-150, 240, 100, 80]];
 
-  // Measure the footprint, shadows included, so that nothing hangs past a table edge.
-  model.updateMatrixWorld(true);
+  /** Poses the joints and heads for time `t` (seconds); returns digPose(t). */
+  const animate = (t) => {
+    const pose = digPose(t);
+    boomJoint.rotation.z = pose.boom;
+    armJoint.rotation.z = pose.arm;
+    bucket.rotation.z = BUCKET_REST + pose.bucket;
+    operatorHead.rotation.y = -Math.PI / 2 + 0.25 * pose.bucket; // follows the bucket a little
+    workerHead.rotation.y = 0.6 * Math.sin((2 * Math.PI * t) / 9); // looks around now and then
+    return pose;
+  };
+
+  // Measure the footprint, shadows included, so that nothing hangs past a table edge,
+  // over the whole dig cycle: the still parts once, the moving arm at many poses.
   const bounds = new THREE.Box3();
   const footprint = [];
+  let lowest = Infinity;
+  let armLowest = Infinity;
   const v = new THREE.Vector3();
-  model.traverse((o) => {
-    if (!o.isMesh) return;
-    const position = o.geometry.attributes.position;
-    for (let i = 0; i < position.count; i++) {
-      v.fromBufferAttribute(position, i).applyMatrix4(o.matrixWorld);
-      bounds.expandByPoint(v);
-      footprint.push(v.x, v.z);
-    }
-  });
+  const measure = (root, skip) => {
+    root.traverse((o) => {
+      if (!o.isMesh || skip?.(o)) return;
+      const position = o.geometry.attributes.position;
+      for (let i = 0; i < position.count; i++) {
+        v.fromBufferAttribute(position, i).applyMatrix4(o.matrixWorld);
+        bounds.expandByPoint(v);
+        footprint.push(v.x, v.z);
+        lowest = Math.min(lowest, v.y);
+      }
+    });
+  };
+  const inArm = (o) => {
+    for (let p = o; p; p = p.parent) if (p === boomJoint) return true;
+    return false;
+  };
+  animate(0);
+  model.updateMatrixWorld(true);
+  measure(model, inArm);
+  const SAMPLES = 48;
+  for (let i = 0; i < SAMPLES; i++) {
+    animate((i / SAMPLES) * DIG_CYCLE_S);
+    model.updateMatrixWorld(true);
+    const before = lowest;
+    lowest = Infinity;
+    measure(boomJoint);
+    armLowest = Math.min(armLowest, lowest);
+    lowest = Math.min(before, lowest);
+  }
+  animate(0);
   for (const [x, z, w, d] of shadows) {
     for (let i = 0; i < 48; i++) {
       const a = (i / 48) * Math.PI * 2;
@@ -181,7 +286,7 @@ export function createDigSite() {
   let radius = 0;
   for (let i = 0; i < footprint.length; i += 2) radius = Math.max(radius, Math.hypot(footprint[i] - cx, footprint[i + 1] - cz));
 
-  const shadowMaterial = new THREE.MeshBasicMaterial({ map: createShadowTexture(), transparent: true, depthWrite: false, toneMapped: false });
+  const shadowMaterial = new THREE.MeshBasicMaterial({ map: shadowTexture, transparent: true, depthWrite: false, toneMapped: false });
   const shadowGeometry = new THREE.PlaneGeometry(1, 1);
   for (const [x, z, w, d] of shadows) {
     const shadow = new THREE.Mesh(shadowGeometry, shadowMaterial);
@@ -196,10 +301,20 @@ export function createDigSite() {
   const site = new THREE.Group();
   site.add(model);
   site.scale.setScalar(SITE_UNIT);
-  return { site, paint, radius: radius * SITE_UNIT, height: bounds.max.y * SITE_UNIT };
+  return {
+    site,
+    paint,
+    radius: radius * SITE_UNIT,
+    height: bounds.max.y * SITE_UNIT,
+    lowest: lowest * SITE_UNIT,
+    armLowest: armLowest * SITE_UNIT,
+    excavator,
+    animate,
+  };
 }
 
 function createShadowTexture() {
+  if (typeof document === 'undefined') return null; // node tests: no canvas
   const size = 128;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;

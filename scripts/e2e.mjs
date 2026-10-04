@@ -59,6 +59,7 @@ async function launchBrowser() {
       '--window-size=1280,800',
       '--ignore-certificate-errors', // the dev server's self-signed cert
       '--enable-unsafe-swiftshader', // WebGL without a GPU
+      '--autoplay-policy=no-user-gesture-required', // the sound starts without a real click
       '--no-first-run',
       '--no-default-browser-check',
       'about:blank',
@@ -518,6 +519,59 @@ const scenarios = {
     await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
     assertNoProblems(browser);
     return `forward Δz=${fz.toFixed(3)}, right Δx=${rx.toFixed(3)}, stopped at offset (${offset.x.toFixed(3)}, ${offset.z.toFixed(3)}); ${shot}`;
+  },
+
+  async 'meeting room: the excavator digs on a loop, with sound, and the menu mutes it'(browser, base) {
+    await openApp(browser, base, 'emulate=1&env=meeting_room');
+    await enterAR(browser);
+    // Look down at the dig site from close by, so the screenshots show the arm.
+    await browser.evaluate(`(() => {
+      const d = window.__iwer.xrDevice;
+      d.position.set(0.069, 1.25, -0.95);
+      const pitch = -40 * Math.PI / 180;
+      d.quaternion.set(Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2));
+    })()`);
+
+    // A whole cycle (6 s): every phase shows up, and nothing solid goes below the table top.
+    const tableTop = MEETING_ROOM_TABLE[1];
+    const seen = [];
+    const shots = [];
+    const end = Date.now() + 6500;
+    while (Date.now() < end) {
+      const s = await snapshot(browser);
+      const phase = s.site.digPhase;
+      if (phase && seen[seen.length - 1] !== phase) {
+        seen.push(phase);
+        if (phase === 'lift' || phase === 'return') shots.push(await browser.screenshot(`dig-${phase === 'lift' ? 'scooped' : 'dumped'}`));
+      }
+      if (s.site.bounds.min[1] < tableTop - 0.005) throw new Error(`a solid part went ${((tableTop - s.site.bounds.min[1]) * 1000).toFixed(1)} mm below the table during ${phase}`);
+      await sleep(100);
+    }
+    for (const phase of ['reach', 'scoop', 'lift', 'dump', 'return']) {
+      if (!seen.includes(phase)) throw new Error(`dig phase ${phase} never showed up (saw ${seen.join(' → ')})`);
+    }
+
+    // Sound runs (headless Chrome is started with autoplay allowed), and the menu's Sound button mutes it.
+    let s = await snapshot(browser);
+    if (s.sound.state !== 'running') throw new Error(`audio state ${s.sound.state}`);
+    if (s.sound.muted || s.menu.labels.sound !== 'Sound on') throw new Error(`sound should start on: ${JSON.stringify(s.sound)}, label ${s.menu.labels.sound}`);
+    await browser.evaluate(`(() => { const d = window.__iwer.xrDevice; d.position.set(0, 1.6, 0); d.quaternion.set(0, 0, 0, 1); })()`);
+    await sleep(300); // let the menu turn to face the new head position before aiming at it
+    await aimAtMenuButton(browser, 'sound');
+    await clickTrigger(browser);
+    await browser.waitFor('window.__app.snapshot().sound.muted === true', { timeout: 3000, label: 'muted by the menu' });
+    s = await snapshot(browser);
+    if (s.menu.labels.sound !== 'Sound off') throw new Error(`label after muting: ${s.menu.labels.sound}`);
+    await waitForDebugLog(/^\[sound\] off$/);
+    await clickTrigger(browser);
+    await browser.waitFor('window.__app.snapshot().sound.muted === false', { timeout: 3000, label: 'unmuted by the menu' });
+    await waitForDebugLog(/^\[sound\] on$/);
+
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    await browser.waitFor(`window.__app.snapshot().sound.state === 'suspended'`, { timeout: 3000, label: 'audio suspended after AR' });
+    assertNoProblems(browser);
+    return `${seen.join(' → ')}; ${shots.join(', ')}`;
   },
 
   async 'menu on the left controller: version line, Exit AR and Reload page'(browser, base) {

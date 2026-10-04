@@ -1,6 +1,6 @@
 # Table Cube
 
-A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres. It's about 42 × 20 cm, and shrinks to fit smaller tables. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
+A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres. It's about 42 × 20 cm, and shrinks to fit smaller tables. The excavator digs on a loop (reach into the pile, scoop, lift, dump) with engine, hydraulic and rock sounds coming from it. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
 
 ## Requirements
 
@@ -52,7 +52,8 @@ The dig site goes on the nearest table, preferring one in front of you when it's
 | Left thumbstick | Push it to slide the dig site across the table: forward moves it away from you, right moves it to your right, whichever way the table is turned. It stops at the table's edge. Moving to another table puts it back at that table's centre. |
 | Right thumbstick | Push it to spin the dig site slowly: right turns it clockwise, left anticlockwise, and the further you push the faster it turns. |
 | Hold **A** | The excavator's paint cycles through colours while you hold it, and keeps the colour it reached when you let go. |
-| The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload page** reloads the app (handy after a code change, since the browser's own controls are out of reach in AR). Its bottom line shows when the app's files last changed ("Updated …"), the same as under the title on the page, so you can tell whether the headset is running the latest version. |
+| **Sound on / Sound off** on the menu | Mutes or unmutes the dig site. The setting is remembered in this browser. |
+| The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload** reloads the app, **Sound** turns the sound on or off (handy after a code change, since the browser's own controls are out of reach in AR). Its bottom line shows when the app's files last changed ("Updated …"), the same as under the title on the page, so you can tell whether the headset is running the latest version. |
 | Pinch does nothing | Use a controller trigger, or allow hand tracking from the same site-info icon and reload. |
 
 To leave AR, use **Exit AR** on the menu above your left hand, or press the Meta button: Quest Browser shows controls near the address bar to resume or quit the immersive session. If something prevented the dig site from appearing, the page repeats what to fix after you leave AR.
@@ -102,7 +103,8 @@ The geometry and selection logic lives in [src/tableLocator.js](src/tableLocator
 index.html              2D landing page with the Enter AR button
 src/main.js             entry point; loads the emulator in dev when needed
 src/app.js              renderer, AR session, per-frame table tracking, dig site placement
-src/digSite.js          the dig site: excavator, operator, worker and rocks from boxes, cylinders and spheres
+src/digSite.js          the dig site: excavator, operator, worker and rocks from boxes, cylinders and spheres, and its dig cycle
+src/siteSound.js        engine, hydraulics and rock sounds, made with WebAudio and placed at the excavator
 src/tableLocator.js     table detection maths and table selection (pure, unit-tested)
 src/statusPanel.js      in-headset text panel
 src/xrMenu.js           in-AR menu above the left hand: Exit AR, Reload page, "Updated …"

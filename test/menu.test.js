@@ -4,11 +4,13 @@ import { MENU_BUTTONS, buttonAt } from '../src/xrMenu.js';
 import { formatVersion } from '../src/version.js';
 
 test('buttonAt maps texture coordinates (v up) to the menu buttons', () => {
-  // Buttons sit in the top half of the panel: Exit AR on the left, Reload page on the right.
-  assert.equal(buttonAt(0.25, 0.7), 'exit');
-  assert.equal(buttonAt(0.75, 0.7), 'reload');
-  assert.equal(buttonAt(0.5, 0.7), null); // the gap between them
-  assert.equal(buttonAt(0.25, 0.15), null); // the version line at the bottom
+  // Three buttons across the top: Exit AR, Reload, Sound.
+  assert.equal(buttonAt(0.18, 0.7), 'exit');
+  assert.equal(buttonAt(0.5, 0.7), 'reload');
+  assert.equal(buttonAt(0.82, 0.7), 'sound');
+  assert.equal(buttonAt(0.342, 0.7), null); // the gaps between them
+  assert.equal(buttonAt(0.658, 0.7), null);
+  assert.equal(buttonAt(0.5, 0.15), null); // the version line at the bottom
   assert.equal(buttonAt(0.01, 0.99), null); // the panel's rounded corner
 });
 

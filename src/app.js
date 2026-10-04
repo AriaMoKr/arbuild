@@ -3,6 +3,7 @@ import { StatusPanel } from './statusPanel.js';
 import { XrMenu } from './xrMenu.js';
 import { FrameTrace } from './frameTrace.js';
 import { createDigSite } from './digSite.js';
+import { SiteSound } from './siteSound.js';
 import {
   clampOffset,
   nextHue,
@@ -78,7 +79,7 @@ export function initApp() {
   // the dig site spins on top of it.
   const anchor = new THREE.Group();
   anchor.visible = false;
-  const { site, paint, radius: siteRadius, height: siteHeight } = createDigSite();
+  const { site, paint, radius: siteRadius, height: siteHeight, excavator, animate: animateSite } = createDigSite();
   anchor.add(site);
   scene.add(anchor);
   // Driven by the right controller: thumbstick spins the site, holding A cycles the excavator's paint.
@@ -89,7 +90,19 @@ export function initApp() {
   scene.add(panel.mesh);
 
   // Exit AR / Reload page / "Updated …", above the left hand (src/xrMenu.js).
-  const menu = new XrMenu({ onExit: () => endAR(), onReload: () => location.reload() });
+  // Engine, hydraulics and rocks, from the excavator (src/siteSound.js).
+  const sound = new SiteSound({ emitter: excavator, camera });
+
+  const menu = new XrMenu({
+    onExit: () => endAR(),
+    onReload: () => location.reload(),
+    onSound: () => {
+      sound.toggleMuted();
+      showSoundLabel();
+    },
+  });
+  const showSoundLabel = () => menu.setLabel('sound', sound.muted ? 'Sound off' : 'Sound on');
+  showSoundLabel();
   scene.add(menu.root);
 
   const tracker = new TableTracker();
@@ -122,6 +135,7 @@ export function initApp() {
 
   async function startAR() {
     if (renderer.xr.isPresenting) return;
+    sound.start(); // browsers only start audio inside a user gesture: this click
     startError = null;
     setButton('Starting…', true);
     let xrSession;
@@ -195,6 +209,7 @@ export function initApp() {
     anchor.visible = false;
     panel.show(null);
     menu.hide();
+    sound.stop();
     setButton('Enter AR', false);
     if (startError) {
       setStatus(startError, 'error');
@@ -291,11 +306,13 @@ export function initApp() {
       }
       moveSite(readLeftStick(xrSession.inputSources), table.top, dt);
       placeSite(table.top);
+      run.digPose = animateSite(time / 1000); // the dig cycle runs on the frame clock
       if (run.seenAt === null && run.viewer && viewAngleTo(siteCentre(table.top), run.viewer) <= SEEN_ANGLE) {
         run.seenAt = time;
       }
     } else {
       anchor.visible = false;
+      run.digPose = null;
       run.lockId = null;
     }
 
@@ -307,6 +324,7 @@ export function initApp() {
     });
     panel.show(messageFor(run.state, xrSession, time, table));
     panel.follow(viewerPose, dt);
+    sound.update(run.digPose, anchor.visible);
   }
 
   function recordFrame(time) {
@@ -582,6 +600,7 @@ export function initApp() {
         limits: lockedTop() ? slideLimits(lockedTop()) : null,
         bounds: anchor.visible ? solidBounds() : null,
         color: `#${paint.color.getHexString(THREE.SRGBColorSpace)}`,
+        digPhase: run.digPose?.phase ?? null,
       },
       panel: panel.mesh.visible ? panel.key : null,
       xrVisibility: renderer.xr.getSession()?.visibilityState ?? null,
@@ -604,6 +623,7 @@ export function initApp() {
       })),
       inputs: [...(renderer.xr.getSession()?.inputSources ?? [])].map(describeInput),
       menu: menu.snapshot(),
+      sound: { state: sound.state, muted: sound.muted },
     }),
   };
   return api;

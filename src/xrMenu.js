@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 // A small in-AR menu above the left controller (or the left hand): Exit AR, Reload page,
-// and when the app last changed. Point at it with the other hand's controller (or pinch
+// Sound on/off, and when the app last changed. Point at it with the other hand's controller (or pinch
 // ray); a ray shows where you're pointing, and the trigger or a pinch presses the button.
 // The browser's own controls are out of reach in AR, which is why this exists.
 
@@ -14,8 +14,9 @@ const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 
 /** Button rectangles in canvas pixels (y down). */
 export const MENU_BUTTONS = [
-  { id: 'exit', label: 'Exit AR', x: 24, y: 24, w: 284, h: 120 },
-  { id: 'reload', label: '↻ Reload page', x: 332, y: 24, w: 284, h: 120 },
+  { id: 'exit', label: 'Exit AR', x: 24, y: 24, w: 188, h: 120 },
+  { id: 'reload', label: '↻ Reload', x: 226, y: 24, w: 188, h: 120 },
+  { id: 'sound', label: 'Sound', x: 428, y: 24, w: 188, h: 120 }, // label set by setLabel()
 ];
 
 /**
@@ -29,8 +30,9 @@ export function buttonAt(u, v, buttons = MENU_BUTTONS) {
 }
 
 export class XrMenu {
-  constructor({ onExit, onReload }) {
-    this.actions = { exit: onExit, reload: onReload };
+  constructor({ onExit, onReload, onSound }) {
+    this.actions = { exit: onExit, reload: onReload, sound: onSound };
+    this.labels = {};
     this.version = '';
     this.hovered = null;
     this.holder = null; // 'left controller' | 'left hand' while visible
@@ -76,6 +78,13 @@ export class XrMenu {
 
   setVersion(text) {
     this.version = text;
+    this.draw();
+  }
+
+  /** Changes a button's label, e.g. setLabel('sound', 'Sound off'). */
+  setLabel(id, label) {
+    if (this.labels[id] === label) return;
+    this.labels[id] = label;
     this.draw();
   }
 
@@ -136,7 +145,7 @@ export class XrMenu {
         buttons[b.id] = this.panel.localToWorld(local).toArray().map((v) => Math.round(v * 1000) / 1000);
       }
     }
-    return { visible: this.group.visible, holder: this.holder, hovered: this.hovered, buttons };
+    return { visible: this.group.visible, holder: this.holder, hovered: this.hovered, buttons, labels: { ...this.labels } };
   }
 
   // ---------- internals ----------
@@ -209,8 +218,8 @@ export class XrMenu {
       g.roundRect(b.x, b.y, b.w, b.h, 20);
       g.fill();
       g.fillStyle = '#ffffff';
-      g.font = `600 44px ${FONT}`;
-      g.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2, b.w - 24);
+      g.font = `600 38px ${FONT}`;
+      g.fillText(this.labels[b.id] ?? b.label, b.x + b.w / 2, b.y + b.h / 2, b.w - 20);
     }
 
     g.fillStyle = '#c9d1e0';
