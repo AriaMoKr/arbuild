@@ -480,10 +480,34 @@ export function initApp() {
 
   ui.button.addEventListener('click', () => (renderer.xr.isPresenting ? endAR() : startAR()));
 
-  checkSupport().then(({ ok, message }) => {
+  // Enter AR stays disabled until the shaders are compiled too, so the session can't
+  // start half-way through and stall on its first frames.
+  Promise.all([checkSupport(), precompile()]).then(([{ ok, message }]) => {
     setButton(ok ? 'Enter AR' : 'AR unavailable', !ok);
     setStatus(message, ok ? 'info' : 'error');
   });
+
+  // Compile every shader the AR scene uses, and upload its canvas textures, while the 2D
+  // page is up. Otherwise the first AR frames stall: on the Quest the first second showed
+  // a 70-90 ms frame. compile() includes hidden objects (the site before a table is found,
+  // the menu, the panel), and AR renders with the same output colour space and tone
+  // mapping, so these programs are reused as they are.
+  async function precompile() {
+    const start = performance.now();
+    try {
+      await renderer.compileAsync(scene, camera);
+      const textures = new Set();
+      scene.traverse((o) => {
+        if (o.material?.map) textures.add(o.material.map);
+      });
+      for (const texture of textures) renderer.initTexture(texture);
+      console.info(
+        `[shaders] precompiled ${renderer.info.programs.length} shader programs and ${textures.size} textures in ${Math.round(performance.now() - start)} ms`,
+      );
+    } catch (err) {
+      console.warn('Shader precompile failed; shaders will compile on first use instead:', err);
+    }
+  }
 
   const api = {
     startAR,
@@ -513,6 +537,7 @@ export function initApp() {
       enabledFeatures: renderer.xr.getSession()?.enabledFeatures ?? null,
       referenceSpaceType: renderer.xr.isPresenting ? activeReferenceSpaceType : null,
       // Extra detail for the debug channel (src/debugChannel.js).
+      programs: renderer.info.programs?.length ?? null, // should not grow after entering AR (see precompile)
       fps: frameStats.fps,
       worstFrameMs: frameStats.worstFrameMs,
       viewer: run.viewer ? [run.viewer.x, run.viewer.y, run.viewer.z].map((v) => round(v)) : null,
