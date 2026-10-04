@@ -85,7 +85,7 @@ export function initApp() {
   const paintHsl = paint.color.getHSL({ h: 0, s: 0, l: 0 }, THREE.SRGBColorSpace);
   let spinDirection = -1;
 
-  const panel = new StatusPanel(renderer);
+  const panel = new StatusPanel();
   scene.add(panel.mesh);
 
   // Exit AR / Reload page / "Updated …", above the left hand (src/xrMenu.js).
@@ -272,6 +272,11 @@ export function initApp() {
     run.candidates = candidates;
     run.sceneObjectCount = sceneObjectCount;
     const table = tracker.update(candidates, run.viewer, time); // `time` lets it ride out brief dropouts
+    const recovery = tracker.takeRecovery();
+    if (recovery) {
+      const how = recovery.newObject ? ' as a new object in the same place' : '';
+      console.info(`[tables] table back after ${Math.round(recovery.missingMs)} ms${how}; the site stayed put`);
+    }
     applyControllerInput(readRightController(xrSession.inputSources), dt);
 
     if (table) {

@@ -471,7 +471,8 @@ const scenarios = {
     // mesh, for 400 ms: the site must stay where the user put it, slid and spun, and come
     // back without a new pick.
     await sleep(2500); // let any pending debug-log batch arrive before counting
-    const picksBefore = countDebugLog(/^\[tables\] /);
+    const PICK = /^\[tables\] (first|tables changed|table lost|user): /;
+    const picksBefore = countDebugLog(PICK);
     await browser.evaluate(`(() => {
       const sem = window.__iwer.xrDevice.sem;
       const table = (e) => e.semanticLabel === 'table';
@@ -497,8 +498,10 @@ const scenarios = {
     if (afterDropout.site.offset.x !== spunAtEdge.site.offset.x || afterDropout.site.offset.z !== spunAtEdge.site.offset.z) {
       throw new Error(`the dropout reset the slide: ${JSON.stringify(spunAtEdge.site.offset)} -> ${JSON.stringify(afterDropout.site.offset)}`);
     }
-    const picksAfter = countDebugLog(/^\[tables\] /);
+    const picksAfter = countDebugLog(PICK);
     if (picksAfter !== picksBefore) throw new Error(`the dropout caused ${picksAfter - picksBefore} new table pick(s)`);
+    // IWER hands the plane back as a new object, which the debug log should say.
+    const recovered = await waitForDebugLog(/^\[tables\] table back after \d+ ms as a new object in the same place; the site stayed put$/);
 
     const [cx, , cz] = atEdge.site.position;
     await browser.evaluate(`(() => {

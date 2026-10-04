@@ -528,3 +528,30 @@ test('TableTracker.lockId changes with every new pick, automatic or by the user'
   tracker.update([a, b], viewer);
   assert.equal(tracker.lockId, first + 2); // never reused across sessions
 });
+
+test('TableTracker reports each ridden-out dropout once, with how long and how it came back', () => {
+  const viewer = { x: 0, y: 1.2, z: 0 };
+  const near = candidate('near', 0.5, -0.4);
+  const other = candidate('other', -1, -1);
+  const tracker = new TableTracker();
+  tracker.update([near, other], viewer, 1000);
+  assert.equal(tracker.takeRecovery(), null);
+
+  tracker.update([other], viewer, 1011); // gone
+  tracker.update([other], viewer, 1022);
+  assert.equal(tracker.takeRecovery(), null); // still missing: nothing to report yet
+  tracker.update([near, other], viewer, 1033); // back, same object
+  assert.deepEqual(tracker.takeRecovery(), { missingMs: 22, newObject: false });
+  assert.equal(tracker.takeRecovery(), null); // only once
+
+  // Swapped for a new object in the very same frame: reported with no missing time.
+  const reborn = candidate('near again', 0.5, -0.41);
+  tracker.update([reborn, other], viewer, 1044);
+  assert.deepEqual(tracker.takeRecovery(), { missingMs: 0, newObject: true });
+
+  // A table that stays gone is a new pick, not a recovery.
+  tracker.update([other], viewer, 2000);
+  tracker.update([other], viewer, 2000 + DROPOUT_GRACE_MS);
+  assert.equal(tracker.reason, 'table lost');
+  assert.equal(tracker.takeRecovery(), null);
+});

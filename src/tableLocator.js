@@ -291,7 +291,8 @@ export function sameTable(a, b) {
  *
  * `lockId` changes only when a table is newly picked (automatically or by the user), not
  * when the lock moves to a returning table's new object, so callers can tell a real
- * change of table (reset the site's slide and spin) from a dropout.
+ * change of table (reset the site's slide and spin) from a dropout. `takeRecovery()`
+ * reports, once, a dropout that was ridden out: { missingMs, newObject }.
  *
  * Cycling counts outward from where the viewer stood when the table was picked, not
  * from where they stand now. Otherwise walking up to the site and pressing again would
@@ -315,6 +316,7 @@ export class TableTracker {
     this.reason = null;
     this.lastLocked = null; // the locked candidate as last seen, used while its table is missing
     this.missingSince = null;
+    this._recovery = null;
     this.lockId = this.lockId ?? 0; // keeps counting across resets, so ids are never reused
     this._seen = new Set(); // every table key seen since the automatic pick
   }
@@ -324,15 +326,20 @@ export class TableTracker {
     let reason = 'first';
     if (this.lockedKey) {
       let locked = candidates.find((c) => c.key === this.lockedKey);
+      let newObject = false;
       if (!locked && this.lastLocked) {
         // The same table back under a new object: move the lock over, it isn't a new table.
         locked = candidates.find((c) => sameTable(c.top, this.lastLocked.top));
         if (locked) {
           this.lockedKey = locked.key;
           this._seen.add(locked.key);
+          newObject = true;
         }
       }
       if (locked) {
+        if (this.missingSince !== null || newObject) {
+          this._recovery = { missingMs: this.missingSince === null ? 0 : now - this.missingSince, newObject };
+        }
         this.lastLocked = locked;
         this.missingSince = null;
         if (!(this.provisional && this._newTableArrived(candidates))) {
@@ -360,6 +367,13 @@ export class TableTracker {
     this.reason = reason;
     for (const c of candidates) this._seen.add(c.key);
     return chosen;
+  }
+
+  /** A dropout the lock rode out since the last call, { missingMs, newObject }, or null. Reported once. */
+  takeRecovery() {
+    const recovery = this._recovery;
+    this._recovery = null;
+    return recovery;
   }
 
   /** The user took control (slid or spun the site): keep this table even if more tables arrive. */

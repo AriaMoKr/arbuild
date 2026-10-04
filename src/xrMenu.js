@@ -40,6 +40,8 @@ export class XrMenu {
     this.canvas.height = CANVAS_H;
     this.texture = new THREE.CanvasTexture(this.canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
+    this.texture.generateMipmaps = false; // re-uploaded on every hover change; always seen up close
+    this.texture.minFilter = THREE.LinearFilter;
 
     this.group = new THREE.Group();
     this.group.visible = false;
