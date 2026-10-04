@@ -257,6 +257,17 @@ async function waitForDebugLog(pattern, { timeout = 8000 } = {}) {
   throw new Error(`debug log never showed ${pattern}`);
 }
 
+/** How many console lines matching `pattern` the debug log has so far. */
+function countDebugLog(pattern) {
+  if (!fs.existsSync(debugLogFile)) return 0;
+  return fs
+    .readFileSync(debugLogFile, 'utf8')
+    .trim()
+    .split('\n')
+    .map((l) => JSON.parse(l))
+    .filter((e) => e.kind === 'console' && pattern.test(e.message)).length;
+}
+
 /** Turn the emulated right controller so its ray points at a menu button, and wait for the hover. */
 async function aimAtMenuButton(browser, id) {
   await browser.waitFor(`window.__app.snapshot().menu.buttons.${id}`, { label: `menu button ${id}` });
@@ -455,6 +466,39 @@ const scenarios = {
     if (Math.abs(spun) < 0.4) throw new Error(`right stick barely spun the site (${spun.toFixed(3)} rad)`);
     assertNear(spunAtEdge.site.position, atEdge.site.position, 'spun at the edge');
     assertOnMeetingTable(spunAtEdge.site, 'spun at the edge');
+
+    // Scene data can drop out for a moment (seen on the Quest). Hide the table, plane and
+    // mesh, for 400 ms: the site must stay where the user put it, slid and spun, and come
+    // back without a new pick.
+    await sleep(2500); // let any pending debug-log batch arrive before counting
+    const picksBefore = countDebugLog(/^\[tables\] /);
+    await browser.evaluate(`(() => {
+      const sem = window.__iwer.xrDevice.sem;
+      const table = (e) => e.semanticLabel === 'table';
+      window.__dropped = { planes: [...sem.trackedPlanes].filter(table), meshes: [...sem.trackedMeshes].filter(table) };
+      for (const e of window.__dropped.planes) sem.trackedPlanes.delete(e);
+      for (const e of window.__dropped.meshes) sem.trackedMeshes.delete(e);
+    })()`);
+    await browser.waitFor('window.__app.snapshot().tableCount === 0', { label: 'table gone' });
+    await sleep(400);
+    const during = await snapshot(browser);
+    if (!during.site.visible) throw new Error('the site disappeared during a brief dropout');
+    assertNear(during.site.position, spunAtEdge.site.position, 'during the dropout');
+    await browser.evaluate(`(() => {
+      const sem = window.__iwer.xrDevice.sem;
+      for (const e of window.__dropped.planes) sem.trackedPlanes.add(e);
+      for (const e of window.__dropped.meshes) sem.trackedMeshes.add(e);
+    })()`);
+    await browser.waitFor('window.__app.snapshot().tableCount === 1', { label: 'table back' });
+    await sleep(2500); // a debug-log flush happens every 2 s
+    const afterDropout = await snapshot(browser);
+    assertNear(afterDropout.site.position, spunAtEdge.site.position, 'after the dropout');
+    if (Math.abs(afterDropout.site.spin - spunAtEdge.site.spin) > 1e-6) throw new Error('the dropout reset the spin');
+    if (afterDropout.site.offset.x !== spunAtEdge.site.offset.x || afterDropout.site.offset.z !== spunAtEdge.site.offset.z) {
+      throw new Error(`the dropout reset the slide: ${JSON.stringify(spunAtEdge.site.offset)} -> ${JSON.stringify(afterDropout.site.offset)}`);
+    }
+    const picksAfter = countDebugLog(/^\[tables\] /);
+    if (picksAfter !== picksBefore) throw new Error(`the dropout caused ${picksAfter - picksBefore} new table pick(s)`);
 
     const [cx, , cz] = atEdge.site.position;
     await browser.evaluate(`(() => {

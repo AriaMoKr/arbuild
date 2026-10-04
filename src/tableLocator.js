@@ -260,6 +260,18 @@ export function pickTable(candidates, viewer) {
   return best;
 }
 
+/** How long the locked table may be missing from the scene data before the lock is dropped (ms). */
+export const DROPOUT_GRACE_MS = 1000;
+
+/**
+ * True when two table tops are the same real table: centres within 15 cm horizontally and
+ * 10 cm in height. Used to recognise a table that comes back as a new XRPlane/XRMesh
+ * object after a dropout (browsers create a new object for a plane that was gone).
+ */
+export function sameTable(a, b) {
+  return Math.hypot(a.center.x - b.center.x, a.center.z - b.center.z) < 0.15 && Math.abs(a.center.y - b.center.y) < 0.1;
+}
+
 /**
  * Keeps the site on one table. The lock follows the same XRPlane/XRMesh object (`key`),
  * so the site never jumps between tables of similar distance. `next()` cycles through
@@ -267,9 +279,19 @@ export function pickTable(candidates, viewer) {
  *
  * The automatic pick (pickTable) is provisional: Quest delivers the room's tables over
  * the first frames, sometimes the far ones first, so while it stands the tracker picks
- * again whenever the set of tables changes. Once the user takes control (`next()`, or
- * `confirm()` when they slide or spin the site) the lock only changes if its table goes
- * away.
+ * again whenever a table it hasn't seen before arrives. Once the user takes control
+ * (`next()`, or `confirm()` when they slide or spin the site) the lock only changes if
+ * its table goes away.
+ *
+ * Scene data can drop out for a frame or two (on the Quest a table vanished and came
+ * back within a frame), so a locked table that goes missing keeps its lock, and the site
+ * stays at its last known place, for up to DROPOUT_GRACE_MS. That needs `now` (the frame
+ * time in ms); without it a missing table is dropped at once. A table that comes back as
+ * a new object in the same place (sameTable) takes over the lock as if it never left.
+ *
+ * `lockId` changes only when a table is newly picked (automatically or by the user), not
+ * when the lock moves to a returning table's new object, so callers can tell a real
+ * change of table (reset the site's slide and spin) from a dropout.
  *
  * Cycling counts outward from where the viewer stood when the table was picked, not
  * from where they stand now. Otherwise walking up to the site and pressing again would
@@ -291,28 +313,52 @@ export class TableTracker {
     this.origin = null; // where the viewer stood when the lock was made; fixes the cycle order
     this.provisional = false;
     this.reason = null;
-    this._seen = new Set(); // the table keys present at the last automatic pick
+    this.lastLocked = null; // the locked candidate as last seen, used while its table is missing
+    this.missingSince = null;
+    this.lockId = this.lockId ?? 0; // keeps counting across resets, so ids are never reused
+    this._seen = new Set(); // every table key seen since the automatic pick
   }
 
   /** Returns the candidate the site should stand on this frame, or null. */
-  update(candidates, viewer) {
+  update(candidates, viewer, now) {
     let reason = 'first';
     if (this.lockedKey) {
-      const locked = candidates.find((c) => c.key === this.lockedKey);
-      if (locked && !(this.provisional && this._tablesChanged(candidates))) {
-        if (!this.origin && viewer) this.origin = { x: viewer.x, z: viewer.z }; // no pose when the lock was made
-        return locked;
+      let locked = candidates.find((c) => c.key === this.lockedKey);
+      if (!locked && this.lastLocked) {
+        // The same table back under a new object: move the lock over, it isn't a new table.
+        locked = candidates.find((c) => sameTable(c.top, this.lastLocked.top));
+        if (locked) {
+          this.lockedKey = locked.key;
+          this._seen.add(locked.key);
+        }
       }
-      reason = locked ? 'tables changed' : 'table lost';
+      if (locked) {
+        this.lastLocked = locked;
+        this.missingSince = null;
+        if (!(this.provisional && this._newTableArrived(candidates))) {
+          if (!this.origin && viewer) this.origin = { x: viewer.x, z: viewer.z }; // no pose when the lock was made
+          return locked;
+        }
+        reason = 'tables changed';
+      } else {
+        if (now !== undefined && this.lastLocked) {
+          this.missingSince ??= now;
+          if (now - this.missingSince < DROPOUT_GRACE_MS) return this.lastLocked; // a brief dropout: hold on
+        }
+        reason = 'table lost';
+      }
       this.lockedKey = null;
     }
     const chosen = pickTable(candidates, viewer);
     if (!chosen) return null;
     this.lockedKey = chosen.key;
+    this.lockId++;
+    this.lastLocked = chosen;
+    this.missingSince = null;
     this.origin = viewer ? { x: viewer.x, z: viewer.z } : null;
     this.provisional = true;
     this.reason = reason;
-    this._seen = new Set(candidates.map((c) => c.key));
+    for (const c of candidates) this._seen.add(c.key);
     return chosen;
   }
 
@@ -328,6 +374,9 @@ export class TableTracker {
     const current = ordered.findIndex((c) => c.key === this.lockedKey);
     const chosen = ordered[(current + 1) % ordered.length];
     this.lockedKey = chosen.key;
+    this.lockId++;
+    this.lastLocked = chosen;
+    this.missingSince = null;
     this.provisional = false;
     this.reason = 'user';
     if (!this.origin && viewer) this.origin = { x: viewer.x, z: viewer.z };
@@ -339,7 +388,8 @@ export class TableTracker {
     return sortByDistance(candidates, this.origin ?? viewer).findIndex((c) => c.key === this.lockedKey);
   }
 
-  _tablesChanged(candidates) {
-    return candidates.length !== this._seen.size || candidates.some((c) => !this._seen.has(c.key));
+  /** A table that hasn't been seen since the automatic pick: a reason to pick again. */
+  _newTableArrived(candidates) {
+    return candidates.some((c) => !this._seen.has(c.key));
   }
 }

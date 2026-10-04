@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DROPOUT_GRACE_MS,
   TableTracker,
   bearingTo,
   isTableLabel,
   pickTable,
+  sameTable,
   polygonCentroid,
   polygonExtents,
   quarterTurnToward,
@@ -415,4 +417,114 @@ test('viewAngleTo measures the 3D angle from the gaze', () => {
   near(viewAngleTo({ x: 0, y: 0.6, z: -1 }, viewer), Math.PI / 4); // 45 degrees below
   near(viewAngleTo({ x: 0, y: 1.6, z: 2 }, viewer), Math.PI);
   assert.equal(viewAngleTo({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }), Infinity);
+});
+
+test('TableTracker rides out a brief dropout of the locked table', () => {
+  const viewer = { x: 0, y: 1.2, z: 0 };
+  const near = candidate('near', 0.5, -0.4);
+  const other = candidate('other', -1, -1);
+  const tracker = new TableTracker();
+  assert.equal(tracker.update([near, other], viewer, 0), near);
+  tracker.confirm(); // the user slid the site
+
+  // The table is missing for a few frames: the lock and the last known top are kept.
+  assert.equal(tracker.update([other], viewer, 11), near);
+  assert.equal(tracker.update([], viewer, 300), near);
+  assert.equal(tracker.lockedKey, near.key);
+  assert.equal(tracker.provisional, false);
+
+  // It comes back: still the same lock, no new pick.
+  const back = { key: near.key, top: { center: { x: 0.51, y: 0.75, z: -0.4 } } };
+  assert.equal(tracker.update([back, other], viewer, 320), back);
+  assert.equal(tracker.reason, 'first');
+});
+
+test('TableTracker drops a table that stays missing past the grace period', () => {
+  const viewer = { x: 0, y: 1.2, z: 0 };
+  const near = candidate('near', 0.5, -0.4);
+  const other = candidate('other', -1, -1);
+  const tracker = new TableTracker();
+  tracker.update([near, other], viewer, 0);
+  assert.equal(tracker.update([other], viewer, 100), near);
+  assert.equal(tracker.update([other], viewer, 100 + DROPOUT_GRACE_MS - 1), near);
+  assert.equal(tracker.update([other], viewer, 100 + DROPOUT_GRACE_MS), other);
+  assert.equal(tracker.reason, 'table lost');
+  // Without a frame time there's no grace (unit tests and callers that don't track time).
+  const untimed = new TableTracker();
+  untimed.update([near, other], viewer);
+  assert.equal(untimed.update([other], viewer), other);
+});
+
+test('TableTracker re-picks provisionally only when a new table arrives, not when one blinks', () => {
+  const viewer = { x: 0, y: 1.2, z: 0 };
+  const a = candidate('a', 0.5, -0.4);
+  const b = candidate('b', -1, -1);
+  const c = candidate('c', 0.3, 0.3); // nearer than a, arrives later
+  const tracker = new TableTracker();
+  assert.equal(tracker.update([a, b], viewer, 0), a);
+  // b vanishes and comes back (its key was already seen): nothing to re-pick.
+  assert.equal(tracker.update([a], viewer, 11), a);
+  assert.equal(tracker.update([a, b], viewer, 22), a);
+  assert.equal(tracker.reason, 'first');
+  // c is new: the provisional pick is made again, and c is nearer.
+  assert.equal(tracker.update([a, b, c], viewer, 33), c);
+  assert.equal(tracker.reason, 'tables changed');
+});
+
+test('TableTracker keeps a table chosen with the trigger through a dropout', () => {
+  const viewer = { x: 0, y: 1.2, z: 0 };
+  const near = candidate('near', 0.5, -0.4);
+  const far = candidate('far', 3, -3);
+  const tracker = new TableTracker();
+  tracker.update([near, far], viewer, 0);
+  assert.equal(tracker.next([near, far], viewer), far);
+  assert.equal(tracker.update([near], viewer, 500), far); // far blinks out
+  assert.equal(tracker.update([near, far], viewer, 600), far);
+  assert.equal(tracker.reason, 'user');
+});
+
+test('TableTracker recognises a table that comes back as a new object in the same place', () => {
+  const viewer = { x: 0, y: 1.2, z: 0 };
+  const near = candidate('near', 0.5, -0.4);
+  const other = candidate('other', -1, -1);
+  const tracker = new TableTracker();
+  tracker.update([near, other], viewer, 0);
+  const id = tracker.lockId;
+
+  // Gone for a frame, then back as a new XRPlane object (what browsers do), 2 cm off.
+  assert.equal(tracker.update([other], viewer, 11), near);
+  const reborn = candidate('near again', 0.52, -0.4);
+  assert.equal(tracker.update([other, reborn], viewer, 22), reborn);
+  assert.equal(tracker.lockedKey, reborn.key);
+  assert.equal(tracker.lockId, id); // not a new table: the app keeps the slide and spin
+  assert.equal(tracker.reason, 'first');
+  assert.equal(tracker.provisional, true); // and the reborn key isn't counted as a new arrival
+  assert.equal(tracker.update([other, reborn], viewer, 33), reborn);
+
+  // A genuinely different table nearby is not mistaken for it.
+  const moved = new TableTracker();
+  moved.update([near, other], viewer);
+  assert.equal(moved.update([other, candidate('neighbour', 0.8, -0.4)], viewer).key.name, 'neighbour');
+  assert.notEqual(moved.lockId, 0);
+});
+
+test('sameTable compares centres: within 15 cm across and 10 cm in height', () => {
+  const at = (x, y, z) => ({ center: { x, y, z } });
+  assert.equal(sameTable(at(0, 0.7, 0), at(0.1, 0.75, -0.1)), true);
+  assert.equal(sameTable(at(0, 0.7, 0), at(0.2, 0.7, 0)), false);
+  assert.equal(sameTable(at(0, 0.7, 0), at(0, 0.85, 0)), false);
+});
+
+test('TableTracker.lockId changes with every new pick, automatic or by the user', () => {
+  const viewer = { x: 0, y: 1.2, z: 0 };
+  const a = candidate('a', 0.5, -0.4);
+  const b = candidate('b', -1, -1);
+  const tracker = new TableTracker();
+  tracker.update([a, b], viewer);
+  const first = tracker.lockId;
+  tracker.next([a, b], viewer);
+  assert.equal(tracker.lockId, first + 1);
+  tracker.reset();
+  tracker.update([a, b], viewer);
+  assert.equal(tracker.lockId, first + 2); // never reused across sessions
 });

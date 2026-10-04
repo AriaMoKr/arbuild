@@ -100,7 +100,7 @@ export function initApp() {
     lastTime: null,
     candidates: [],
     viewer: null,
-    lockedKey: null,
+    lockId: null, // tracker.lockId of the table the site is on; a change means a new table
     lockedAt: 0,
     seenAt: null, // when the site was first in view since the last table change
     offset: { x: 0, z: 0 }, // site position relative to the table centre, in the table's frame (left stick)
@@ -172,7 +172,7 @@ export function initApp() {
       lastTime: null,
       candidates: [],
       viewer: null,
-      lockedKey: null,
+      lockId: null,
       lockedAt: 0,
       seenAt: null,
       offset: { x: 0, z: 0 },
@@ -271,12 +271,12 @@ export function initApp() {
     const { candidates, sceneObjectCount } = findTables(frame, refSpace);
     run.candidates = candidates;
     run.sceneObjectCount = sceneObjectCount;
-    const table = tracker.update(candidates, run.viewer);
+    const table = tracker.update(candidates, run.viewer, time); // `time` lets it ride out brief dropouts
     applyControllerInput(readRightController(xrSession.inputSources), dt);
 
     if (table) {
-      if (tracker.lockedKey !== run.lockedKey) {
-        run.lockedKey = tracker.lockedKey;
+      if (tracker.lockId !== run.lockId) {
+        run.lockId = tracker.lockId;
         run.lockedAt = time;
         run.seenAt = null;
         // A new table starts with the site at its centre, square to the table and facing the user.
@@ -291,7 +291,7 @@ export function initApp() {
       }
     } else {
       anchor.visible = false;
-      run.lockedKey = null;
+      run.lockId = null;
     }
 
     run.state = describeState({
