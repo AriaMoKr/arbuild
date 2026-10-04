@@ -5,10 +5,14 @@
   "description": "WebXR AR app for Meta Quest 3 that places a cube at the center of a detected table.",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/check-node.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/check-node.mjs",
     "build": "vite build",
+    "prepreview": "node scripts/check-node.mjs",
     "preview": "vite preview",
     "test": "node --test",
+    "pretest:e2e": "node scripts/check-node.mjs",
     "test:e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {

@@ -5,7 +5,7 @@ A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds
 ## Requirements
 
 - Meta Quest 3 or 3S, with a room scan that includes a table (see below).
-- A PC with Node.js 22.12 or newer, on the same network as the headset.
+- A PC with Node.js 22.12 or newer, on the same network as the headset. On Windows, use the official Node from nodejs.org: MSYS2's MinGW build of Node can't run Vite 8, and `npm run dev` will stop with an explanation if it's the `node` on your PATH.
 
 ## Run it on the Quest
 

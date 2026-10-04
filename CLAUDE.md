@@ -18,6 +18,7 @@ npm run build                                 # static site in dist/ (base './')
 
 - **Tests:** there's no linter or formatter configured. `npm test` must stay `node --test` with no path: Node 22 treats a directory argument as a module and runs nothing.
 - **Dev server:** `.claude/launch.json` has a `dev` config for the preview tool.
+- **Windows Node:** Vite 8's bundler (Rolldown) ships only MSVC Windows binaries, so MinGW-built Node (MSYS2's `C:\msys64\mingw64\bin\node.exe`, which is first on PATH in the user's MSYS2 shell) crashes with "Cannot find native binding". Forcing the MSVC binding via `NAPI_RS_NATIVE_LIBRARY_PATH` isn't a fix: `vite build` then panics with "Node-API symbol has not been loaded". `scripts/check-node.mjs` runs as the `predev`/`prebuild`/`prepreview`/`pretest:e2e` hook and exits with an explanation instead. Use `C:\Program Files\nodejs`.
 - **Quest access:** the headset loads `https://<pc-lan-ip>:5173/` over Wi-Fi and clicks through the self-signed certificate. WebXR needs a secure context, so plain HTTP over the LAN won't work. On this PC the Node firewall rules only allowed Public networks, so the Quest just spun until an inbound rule for TCP 5173 on the Private profile was added (see README).
 
 ## Architecture
