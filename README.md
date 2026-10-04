@@ -20,6 +20,8 @@ Vite prints one or more `Network:` lines such as `https://192.168.1.23:5173/`. U
 2. The browser warns that the connection isn't private, because the dev server uses a self-signed certificate. Choose **Advanced › Proceed**. WebXR only works on secure (https) pages, which is why plain `http://` won't do. The browser remembers this choice for about a week, so expect the warning again after that, after the PC's address changes, or after the certificate is regenerated (it's valid for a year; deleting `node_modules/.vite` also regenerates it).
 3. Tap **Enter AR**. When the browser asks about **spatial data**, choose **Allow**; the app needs it to find the table. It may also ask about **hand tracking**. Allow that if you want to pinch; controllers work either way.
 
+The dev server also serves the same app over plain HTTP on port 5174. On the Quest that page loads, but WebXR stays off because it isn't a secure page, so use the `https://…:5173` address there. On the PC, `http://localhost:5174/` counts as secure and works without the certificate warning.
+
 ### If the page never loads on the Quest
 
 If the Quest keeps loading and never even shows the certificate warning, its requests aren't reaching the PC. Usually Windows Firewall is the cause:
@@ -56,7 +58,7 @@ To leave AR, press the Meta button. Quest Browser shows controls near the addres
 
 ## Developing without a headset
 
-`npm run dev` and open `https://localhost:5173/` in desktop Chrome or Edge. When the browser has no real AR support, the dev build loads Meta's [Immersive Web Emulation Runtime](https://github.com/meta-quest/immersive-web-emulation-runtime) and a scanned synthetic room, so **Enter AR** works on the desktop. The emulator is never included in `npm run build`.
+`npm run dev` and open `http://localhost:5174/` (or `https://localhost:5173/`) in desktop Chrome or Edge. When the browser has no real AR support, the dev build loads Meta's [Immersive Web Emulation Runtime](https://github.com/meta-quest/immersive-web-emulation-runtime) and a scanned synthetic room, so **Enter AR** works on the desktop. The emulator is never included in `npm run build`.
 
 Query parameters (dev server only):
 
@@ -65,6 +67,10 @@ Query parameters (dev server only):
 | `?env=meeting_room` | Synthetic room to load: `meeting_room` (default, one table), `office_small`, `living_room` (four tables), `office_large`, `music_room`. |
 | `?planes=1` | Draw the emulated planes and furniture boxes. |
 | `?emulate=1` / `?emulate=0` | Force the emulator on or off. |
+
+### Debug log
+
+In dev builds, the page sends its console output, uncaught errors and a snapshot of the app's state back to the dev server, which appends them to `logs/quest-debug.jsonl` (one JSON object per line). That works from the headset too, with no USB cable. The snapshot covers detected tables, placement, frame rate and controllers, and is sent whenever something changes and every 10 s during AR. Errors and warnings from the page are also printed in the `npm run dev` terminal. Add `?debug=0` to the URL to turn it off. None of this is in `npm run build`.
 
 Tests:
 
@@ -99,7 +105,9 @@ src/digSite.js          the dig site: excavator, operator, worker and rocks from
 src/tableLocator.js     table detection maths and table selection (pure, unit-tested)
 src/statusPanel.js      in-headset text panel
 src/emulation.js        dev-only Quest 3 emulator setup (IWER + synthetic rooms)
+src/debugChannel.js     dev-only: sends console output, errors and state to the dev server
 test/                   unit tests (node --test)
 scripts/e2e.mjs         headless end-to-end test
+scripts/vite-plugins.mjs  dev server extras: the plain-HTTP port and the debug log endpoint
 vite.config.js          HTTPS dev server on the LAN, build settings
 ```

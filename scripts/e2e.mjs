@@ -482,6 +482,7 @@ const scenarios = {
 fs.mkdirSync(outDir, { recursive: true });
 const server = await createServer({
   root,
+  mode: 'e2e', // vite.config.js: no plain-HTTP mirror, nothing written to the debug log
   logLevel: 'warn',
   server: { port: 5199, strictPort: false, host: '127.0.0.1' },
 });

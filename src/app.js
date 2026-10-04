@@ -100,7 +100,10 @@ export function initApp() {
     offset: { x: 0, z: 0 }, // site position relative to the table centre, in the table's frame (left stick)
     roomCaptureUsed: false,
     state: 'idle',
+    sceneObjectCount: 0,
   };
+  // Frame timing over the last second, for the debug channel's snapshots.
+  const frameStats = { since: null, last: null, count: 0, worstMs: 0, fps: null, worstFrameMs: null };
 
   window.addEventListener('resize', () => {
     if (renderer.xr.isPresenting) return; // three ignores setSize while presenting
@@ -163,7 +166,9 @@ export function initApp() {
       offset: { x: 0, z: 0 },
       roomCaptureUsed: false,
       state: 'scanning',
+      sceneObjectCount: 0,
     });
+    Object.assign(frameStats, { since: null, last: null, count: 0, worstMs: 0, fps: null, worstFrameMs: null });
     tracker.reset();
     setButton('Exit AR', false);
     setStatus('AR session running.', 'info');
@@ -222,6 +227,7 @@ export function initApp() {
     if (run.startTime === null) run.startTime = time;
     const dt = run.lastTime === null ? 0 : Math.min((time - run.lastTime) / 1000, 0.1);
     run.lastTime = time;
+    recordFrame(time);
 
     const viewerPose = frame.getViewerPose(refSpace);
     if (viewerPose) {
@@ -238,6 +244,7 @@ export function initApp() {
 
     const { candidates, sceneObjectCount } = findTables(frame, refSpace);
     run.candidates = candidates;
+    run.sceneObjectCount = sceneObjectCount;
     const table = tracker.update(candidates, run.viewer);
     applyControllerInput(readRightController(xrSession.inputSources), dt);
 
@@ -268,6 +275,21 @@ export function initApp() {
     });
     panel.show(messageFor(run.state, xrSession, time, table));
     panel.follow(viewerPose, dt);
+  }
+
+  function recordFrame(time) {
+    if (frameStats.since === null) {
+      frameStats.since = frameStats.last = time;
+      return;
+    }
+    frameStats.worstMs = Math.max(frameStats.worstMs, time - frameStats.last);
+    frameStats.last = time;
+    frameStats.count++;
+    if (time - frameStats.since >= 1000) {
+      frameStats.fps = Math.round((frameStats.count * 1000) / (time - frameStats.since));
+      frameStats.worstFrameMs = round(frameStats.worstMs, 1);
+      Object.assign(frameStats, { since: time, count: 0, worstMs: 0 });
+    }
   }
 
   function findTables(frame, refSpace) {
@@ -461,9 +483,45 @@ export function initApp() {
       panel: panel.mesh.visible ? panel.key : null,
       enabledFeatures: renderer.xr.getSession()?.enabledFeatures ?? null,
       referenceSpaceType: renderer.xr.isPresenting ? activeReferenceSpaceType : null,
+      // Extra detail for the debug channel (src/debugChannel.js).
+      fps: frameStats.fps,
+      worstFrameMs: frameStats.worstFrameMs,
+      viewer: run.viewer ? [run.viewer.x, run.viewer.y, run.viewer.z].map((v) => round(v)) : null,
+      sceneObjects: run.sceneObjectCount,
+      tables: run.candidates.map((c) => ({
+        from: 'planeSpace' in c.key ? 'plane' : 'mesh',
+        label: c.key.semanticLabel ?? null,
+        centre: [c.top.center.x, c.top.center.y, c.top.center.z].map((v) => round(v)),
+        size: [round(c.top.width), round(c.top.depth)],
+        yaw: round(c.top.yaw),
+        locked: c.key === tracker.lockedKey,
+      })),
+      inputs: [...(renderer.xr.getSession()?.inputSources ?? [])].map(describeInput),
     }),
   };
   return api;
+}
+
+function round(value, digits = 3) {
+  const f = 10 ** digits;
+  return Math.round(value * f) / f;
+}
+
+function describeInput(source) {
+  const gamepad = source.gamepad;
+  return {
+    hand: source.handedness,
+    kind: source.hand ? 'hand' : 'controller',
+    mode: source.targetRayMode,
+    profile: source.profiles?.[0] ?? null,
+    gamepad: gamepad
+      ? {
+          mapping: gamepad.mapping,
+          axes: [...gamepad.axes].map((v) => round(v, 2)),
+          pressed: [...gamepad.buttons].flatMap((b, i) => (b.pressed ? [i] : [])),
+        }
+      : null,
+  };
 }
 
 function box3ToArrays(box) {
