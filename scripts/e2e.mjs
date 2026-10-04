@@ -18,6 +18,8 @@ const TOLERANCE = 0.01; // metres
 
 // Table-top centres in local-floor coordinates, read from @iwer/sem's captures.
 const MEETING_ROOM_TABLE = [0.069, 0.73, -1.572];
+const MEETING_ROOM_TABLE_WIDTH = 1.239; // along x (the table is turned only ~0.6 degrees)
+const CUBE_ROUNDING = 0.06; // corner radius / edge, as in src/app.js
 const LIVING_ROOM_TABLES = [
   [1.26, 0.455, -0.403],
   [-1.539, 0.789, 0.204],
@@ -350,6 +352,33 @@ const scenarios = {
     if (Math.abs(reach - 1) > 1e-6) throw new Error(`expected the cube to stop at the edge, got ${reach.toFixed(3)} of the way`);
     if (Math.abs(atEdge.cube.position[1] - start.cube.position[1]) > 1e-6) throw new Error('cube height changed while sliding');
 
+    // Check the edge against the scanned table, not just the app's own limits.
+    const tableLeft = MEETING_ROOM_TABLE[0] - MEETING_ROOM_TABLE_WIDTH / 2;
+    if (Math.abs(atEdge.cube.position[0] - (tableLeft + CUBE_EDGE / 2)) > TOLERANCE) {
+      throw new Error(`cube stopped at x=${atEdge.cube.position[0].toFixed(3)}, expected ${(tableLeft + CUBE_EDGE / 2).toFixed(3)} (table edge + half a cube)`);
+    }
+    // The contact shadow is cropped at the table edge instead of hanging in the air.
+    if (atEdge.cube.shadowBox.min[0] < tableLeft - 0.006) {
+      throw new Error(`shadow reaches x=${atEdge.cube.shadowBox.min[0].toFixed(3)}, past the table edge at ${tableLeft.toFixed(3)}`);
+    }
+
+    // Spinning at the edge widens the footprint, so the cube moves in to stay on the table.
+    await browser.evaluate(`(async () => {
+      const right = window.__iwer.xrDevice.controllers.right;
+      right.updateAxes('thumbstick', 1, 0);
+      await new Promise((r) => setTimeout(r, 1000));
+      right.updateAxes('thumbstick', 0, 0);
+      await new Promise((r) => setTimeout(r, 100));
+    })()`);
+    await push(-1, 0, 500);
+    const spunAtEdge = await snapshot(browser);
+    const spin = spunAtEdge.cube.spin;
+    const spunReach = (CUBE_EDGE / 2 - CUBE_EDGE * CUBE_ROUNDING) * (Math.abs(Math.cos(spin)) + Math.abs(Math.sin(spin))) + CUBE_EDGE * CUBE_ROUNDING;
+    if (Math.abs(spin) < 0.4) throw new Error(`right stick barely spun the cube (${spin.toFixed(3)} rad)`);
+    if (Math.abs(spunAtEdge.cube.position[0] - (tableLeft + spunReach)) > TOLERANCE) {
+      throw new Error(`spun cube stopped at x=${spunAtEdge.cube.position[0].toFixed(3)}, expected ${(tableLeft + spunReach).toFixed(3)} so its corners stay on the table`);
+    }
+
     const [cx, , cz] = atEdge.cube.position;
     await browser.evaluate(`(() => {
       const d = window.__iwer.xrDevice;
@@ -387,8 +416,16 @@ const scenarios = {
       left.updateAxes('thumbstick', 0, 0);
       await new Promise((r) => setTimeout(r, 100));
     })()`);
-    const nudged = (await snapshot(browser)).cube.offset;
+    const nudgedSnap = await snapshot(browser);
+    const nudged = nudgedSnap.cube.offset;
     if (Math.hypot(nudged.x, nudged.z) < 0.05) throw new Error(`left stick didn't move the cube: ${JSON.stringify(nudged)}`);
+    // This table is turned about 90 degrees, so a yaw-sign or table-frame mix-up shows here.
+    // The user faces -Z: forward-right on the stick must move the cube equally towards +X and -Z in the room.
+    const [ndx, , ndz] = nudgedSnap.cube.position.map((v, i) => v - s.cube.position[i]);
+    if (!(ndx > 0.05 && ndz < -0.05 && Math.abs(ndx + ndz) < 0.02)) {
+      throw new Error(`stick forward-right moved the cube by [${ndx.toFixed(3)}, ${ndz.toFixed(3)}] in the room; expected equal +x and -z`);
+    }
+    if (Math.abs(Math.hypot(ndx, ndz) - Math.hypot(nudged.x, nudged.z)) > 1e-4) throw new Error('room displacement does not match the table-frame offset');
     for (let i = 1; i <= 4; i++) {
       s = await pressTrigger(browser);
       if (s.tableIndex !== i % 4) throw new Error(`press ${i}: expected index ${i % 4}, got ${s.tableIndex}`);

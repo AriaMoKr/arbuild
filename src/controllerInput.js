@@ -74,15 +74,30 @@ export function nextHue(hue, dt) {
  * The horizontal direction { x, z } (unit length) the user is facing, from the view's
  * forward and up vectors. When looking almost straight down at the table, forward
  * has no useful horizontal part, but the top of the view still points away from the
- * user, so `up` is used instead. Returns null if neither works.
+ * user, so `up` is used instead (negated when looking almost straight up, where it
+ * points back at the user). Returns null if neither works.
  */
 export function viewerHeading(forward, up) {
-  for (const v of [forward, up]) {
+  const upSign = forward?.y > 0 ? -1 : 1;
+  for (const [v, sign] of [
+    [forward, 1],
+    [up, upSign],
+  ]) {
     if (!v) continue;
     const length = Math.hypot(v.x, v.z);
-    if (length > 0.2) return { x: v.x / length, z: v.z / length };
+    if (length > 0.2) return { x: (sign * v.x) / length, z: (sign * v.z) / length };
   }
   return null;
+}
+
+/**
+ * How far a cube with rounded vertical edges reaches from its centre along the table's
+ * axes when spun by `spin` radians: an edge/2 square grows to (edge/2)·√2 at 45°.
+ * `cornerFraction` is the corner radius as a fraction of the edge.
+ */
+export function cubeReach(edge, cornerFraction, spin) {
+  const radius = edge * cornerFraction;
+  return (edge / 2 - radius) * (Math.abs(Math.cos(spin)) + Math.abs(Math.sin(spin))) + radius;
 }
 
 /** Keep a table-frame offset within ±limits on each axis. */

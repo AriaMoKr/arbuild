@@ -6,6 +6,7 @@ import {
   MAX_SPIN_SPEED,
   STICK_DEADZONE,
   clampOffset,
+  cubeReach,
   nextHue,
   readLeftStick,
   readRightController,
@@ -99,6 +100,10 @@ test('viewerHeading uses the horizontal forward, or the view up vector when look
   const down = viewerHeading({ x: 0, y: -1, z: 0 }, { x: 0, y: 0, z: -1 });
   near(down.z, -1);
   assert.equal(viewerHeading({ x: 0, y: -1, z: 0 }, { x: 0, y: 0, z: 0 }), null);
+  // Looking almost straight up the top of the view points back at the user, so it's flipped.
+  const up = viewerHeading({ x: 0, y: 0.99, z: -0.14 }, { x: 0, y: 0.14, z: 0.99 });
+  near(up.x, 0);
+  near(up.z, -1);
   assert.equal(viewerHeading(undefined, undefined), null);
 });
 
@@ -150,6 +155,16 @@ test('tableOffsetToWorld follows the anchor yaw convention', () => {
   const z = tableOffsetToWorld({ x: 0, z: 1 }, Math.PI / 2);
   near(z.x, 1);
   near(z.z, 0);
+});
+
+test('cubeReach grows from half an edge to the spun footprint and back', () => {
+  near(cubeReach(0.1, 0, 0), 0.05);
+  near(cubeReach(0.1, 0, Math.PI / 4), 0.05 * Math.SQRT2);
+  near(cubeReach(0.1, 0, Math.PI / 2), 0.05);
+  near(cubeReach(0.1, 0, -Math.PI / 4), 0.05 * Math.SQRT2);
+  // Rounded corners reach a little less: (h - r)√2 + r.
+  near(cubeReach(0.1, 0.06, Math.PI / 4), (0.05 - 0.006) * Math.SQRT2 + 0.006);
+  near(cubeReach(0.1, 0.06, 0), 0.05);
 });
 
 test('clampOffset bounds each axis independently', () => {
