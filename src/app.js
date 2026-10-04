@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { StatusPanel } from './statusPanel.js';
 import { XrMenu } from './xrMenu.js';
+import { FrameTrace } from './frameTrace.js';
 import { createDigSite } from './digSite.js';
 import {
   clampOffset,
@@ -153,13 +154,19 @@ export function initApp() {
       return;
     }
     xrSession.addEventListener('select', onSelect);
+    // 'visible', 'visible-blurred' (a system menu is up) or 'hidden' (e.g. the headset is off).
+    xrSession.addEventListener('visibilitychange', () => console.info(`[session] visibility: ${xrSession.visibilityState}`));
   }
 
   function endAR() {
     renderer.xr.getSession()?.end();
   }
 
+  // Frame timing for the first seconds of each session, logged as one '[startup]' line.
+  const startupTrace = new FrameTrace();
+
   renderer.xr.addEventListener('sessionstart', () => {
+    startupTrace.start(performance.now());
     Object.assign(run, {
       startTime: null,
       lastTime: null,
@@ -231,8 +238,12 @@ export function initApp() {
 
   renderer.setAnimationLoop((time, frame) => {
     if (!frame) return; // nothing to draw on the 2D page
+    const t0 = performance.now();
     onXRFrame(time, frame);
+    const t1 = performance.now();
     renderer.render(scene, camera);
+    const summary = startupTrace.record(time, t1 - t0, performance.now() - t1);
+    if (summary) console.info(`[startup] ${summary}`);
   });
 
   function onXRFrame(time, frame) {
@@ -495,7 +506,10 @@ export function initApp() {
   async function precompile() {
     const start = performance.now();
     try {
-      await renderer.compileAsync(scene, camera);
+      // compileAsync needs KHR_parallel_shader_compile, which Quest Browser lacks (three warns
+      // about it every time); there, compile in one go instead.
+      if (renderer.extensions.has('KHR_parallel_shader_compile')) await renderer.compileAsync(scene, camera);
+      else renderer.compile(scene, camera);
       const textures = new Set();
       scene.traverse((o) => {
         if (o.material?.map) textures.add(o.material.map);
@@ -534,6 +548,7 @@ export function initApp() {
         color: `#${paint.color.getHexString(THREE.SRGBColorSpace)}`,
       },
       panel: panel.mesh.visible ? panel.key : null,
+      xrVisibility: renderer.xr.getSession()?.visibilityState ?? null,
       enabledFeatures: renderer.xr.getSession()?.enabledFeatures ?? null,
       referenceSpaceType: renderer.xr.isPresenting ? activeReferenceSpaceType : null,
       // Extra detail for the debug channel (src/debugChannel.js).

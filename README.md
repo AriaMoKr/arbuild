@@ -71,7 +71,7 @@ Query parameters (dev server only):
 
 ### Debug log
 
-In dev builds, the page sends its console output, uncaught errors and a snapshot of the app's state back to the dev server, which appends them to `logs/quest-debug.jsonl` (one JSON object per line). That works from the headset too, with no USB cable. The snapshot covers detected tables, placement, frame rate and controllers, and is sent whenever something changes and every 10 s during AR. Errors and warnings from the page are also printed in the `npm run dev` terminal. It also records which table was picked and why (`[tables] …`), every menu button press (`[menu] …`), and how long the shaders took to compile before AR (`[shaders] …`). Add `?debug=0` to the URL to turn it off. None of this is in `npm run build`.
+In dev builds, the page sends its console output, uncaught errors and a snapshot of the app's state back to the dev server, which appends them to `logs/quest-debug.jsonl` (one JSON object per line). That works from the headset too, with no USB cable. The snapshot covers detected tables, placement, frame rate and controllers, and is sent whenever something changes and every 10 s during AR. Errors and warnings from the page are also printed in the `npm run dev` terminal. It also records which table was picked and why (`[tables] …`), every menu button press (`[menu] …`), how long the shaders took to compile before AR (`[shaders] …`), the frame timing of each session's first 3 seconds (`[startup] …`), and when the session's visibility changes, for example when the headset is taken off (`[session] …`). Add `?debug=0` to the URL to turn it off. None of this is in `npm run build`.
 
 Tests:
 
@@ -106,6 +106,7 @@ src/digSite.js          the dig site: excavator, operator, worker and rocks from
 src/tableLocator.js     table detection maths and table selection (pure, unit-tested)
 src/statusPanel.js      in-headset text panel
 src/xrMenu.js           in-AR menu above the left hand: Exit AR, Reload page, "Updated …"
+src/frameTrace.js       times each frame of a session's first seconds, for the debug log
 src/version.js          fetches ./__version.json, when the app's files last changed
 src/emulation.js        dev-only Quest 3 emulator setup (IWER + synthetic rooms)
 src/debugChannel.js     dev-only: sends console output, errors and state to the dev server

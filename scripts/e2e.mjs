@@ -333,6 +333,12 @@ const scenarios = {
     await sleep(800);
     shots.push(await browser.screenshot('meeting_room-close-up'));
 
+    // The startup trace covers the session's first 3 s and then logs one summary line.
+    const startup = await waitForDebugLog(/^\[startup\] first frame \d+ ms after the session started; \d+ frames in 3 s, /, {
+      timeout: 10000,
+    });
+    shots.push(startup.slice(0, 120));
+
     await browser.evaluate('window.__app.endAR()');
     await browser.waitFor('!window.__app.snapshot().presenting && document.getElementById("enter-ar").textContent === "Enter AR"', {
       label: 'session ended',
