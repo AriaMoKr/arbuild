@@ -1,5 +1,5 @@
-// Touch controller input for the cube: the left thumbstick slides it across the table,
-// the right thumbstick spins it, and holding A cycles its colour.
+// Touch controller input for the dig site: the left thumbstick slides it across the
+// table, the right thumbstick spins it, and holding A cycles the excavator's paint colour.
 // Pure functions on plain values, so they run under `node --test`.
 //
 // Quest Touch controllers use the WebXR 'xr-standard' gamepad layout:
@@ -53,7 +53,7 @@ function deflection(stick) {
 }
 
 /**
- * Spin speed for a thumbstick position. Any push past the dead zone spins the cube,
+ * Spin speed for a thumbstick position. Any push past the dead zone spins the site,
  * faster the further the stick goes. Pushing right turns it clockwise seen from
  * above (negative yaw) and left turns it anticlockwise; a straight up/down push
  * keeps the previous direction. Returns { velocity (rad/s), direction (+1 | -1) }.
@@ -90,16 +90,6 @@ export function viewerHeading(forward, up) {
   return null;
 }
 
-/**
- * How far a cube with rounded vertical edges reaches from its centre along the table's
- * axes when spun by `spin` radians: an edge/2 square grows to (edge/2)·√2 at 45°.
- * `cornerFraction` is the corner radius as a fraction of the edge.
- */
-export function cubeReach(edge, cornerFraction, spin) {
-  const radius = edge * cornerFraction;
-  return (edge / 2 - radius) * (Math.abs(Math.cos(spin)) + Math.abs(Math.sin(spin))) + radius;
-}
-
 /** Keep a table-frame offset within ±limits on each axis. */
 export function clampOffset(offset, limits) {
   return {
@@ -120,10 +110,10 @@ export function tableOffsetToWorld(offset, yaw) {
 }
 
 /**
- * The cube's new offset from the table centre (in the table frame) after the stick
+ * The site's new offset from the table centre (in the table frame) after the stick
  * has been held for `dt` seconds. Movement is relative to where the user faces:
- * pushing forward slides the cube away from them and right slides it to their right,
- * whatever the table's orientation. The result stays within ±limits so the cube
+ * pushing forward slides the site away from them and right slides it to their right,
+ * whatever the table's orientation. The result stays within ±limits so the site
  * doesn't leave the table top.
  */
 export function slideOnTable(offset, stick, heading, yaw, limits, dt) {

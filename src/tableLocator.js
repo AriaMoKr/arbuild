@@ -1,5 +1,5 @@
 // Finds tables in WebXR scene data (plane-detection / mesh-detection) and decides
-// which one the cube belongs on. Pure math on plain numbers: no three.js and no
+// which one the dig site belongs on. Pure math on plain numbers: no three.js and no
 // WebXR objects beyond what callers pass in, so it runs under `node --test`.
 //
 // Conventions this code relies on (see README "How it works"):
@@ -36,7 +36,7 @@ function column(m, i) {
 /**
  * Rotation about reference-space +Y that lines an object up with the matrix's most
  * horizontal local axis. Only yaw is taken: plane frames can be upside down and
- * mesh frames can be Z-up, so copying the full rotation would tip the cube over.
+ * mesh frames can be Z-up, so copying the full rotation would tip the site over.
  */
 export function yawFromMatrix(m) {
   // Prefer local X, then Z, then Y: the first one that is mostly horizontal.
@@ -206,6 +206,21 @@ export function viewAngleTo(point, viewer) {
   return Math.acos(Math.min(1, Math.max(-1, cos)));
 }
 
+/**
+ * Quarter turn (0, π/2, π or 3π/2) to add to a table's `yaw` so that an object's front
+ * (its +Z axis) faces the viewer as nearly as it can while staying square to the table
+ * edges. Returns 0 when there's no viewer or they stand right over `center`.
+ */
+export function quarterTurnToward(viewer, center, yaw) {
+  if (!viewer) return 0;
+  const dx = viewer.x - center.x;
+  const dz = viewer.z - center.z;
+  if (Math.hypot(dx, dz) < 1e-6) return 0;
+  const facing = Math.atan2(dx, dz); // the yaw that points +Z straight at the viewer
+  const quarters = Math.round((facing - yaw) / (Math.PI / 2));
+  return (((quarters % 4) + 4) % 4) * (Math.PI / 2);
+}
+
 /** True when `point` is within VIEW_HALF_ANGLE of where the viewer is facing (horizontally). */
 export function isInView(point, viewer) {
   const bearing = bearingTo(point, viewer);
@@ -222,13 +237,13 @@ export function sortByDistance(candidates, viewer) {
 }
 
 /**
- * Keeps the cube on one table. When nothing is locked it picks the nearest table in
+ * Keeps the site on one table. When nothing is locked it picks the nearest table in
  * front of the viewer (or the nearest overall if none is in view); after that the
- * lock follows the same XRPlane/XRMesh object (`key`), so the cube never jumps
+ * lock follows the same XRPlane/XRMesh object (`key`), so the site never jumps
  * between tables of similar distance. `next()` cycles through tables.
  *
  * Cycling counts outward from where the viewer stood when the table was first
- * locked, not from where they stand now. Otherwise walking up to the cube and
+ * locked, not from where they stand now. Otherwise walking up to the site and
  * pressing again would bounce between the two nearest tables forever.
  *
  * A candidate is { key, top } where `key` is any identity-stable object
@@ -246,7 +261,7 @@ export class TableTracker {
     this.origin = null;
   }
 
-  /** Returns the candidate the cube should sit on this frame, or null. */
+  /** Returns the candidate the site should stand on this frame, or null. */
   update(candidates, viewer) {
     if (this.lockedKey) {
       const locked = candidates.find((c) => c.key === this.lockedKey);

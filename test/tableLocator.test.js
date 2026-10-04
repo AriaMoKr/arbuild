@@ -6,6 +6,7 @@ import {
   isTableLabel,
   polygonCentroid,
   polygonExtents,
+  quarterTurnToward,
   sortByDistance,
   tableTopFromMesh,
   tableTopFromPlane,
@@ -234,7 +235,7 @@ test('TableTracker picks the nearest table and stays on it as the user moves', (
   const far = candidate('far', 0, -3);
   const tracker = new TableTracker();
   assert.equal(tracker.update([far, near1], { x: 0, y: 1.6, z: 0 }), near1);
-  // The user walks next to the far table; the cube must not jump.
+  // The user walks next to the far table; the site must not jump.
   assert.equal(tracker.update([far, near1], { x: 0, y: 1.6, z: -3 }), near1);
 });
 
@@ -270,7 +271,7 @@ test('TableTracker keys on object identity across frames', () => {
   assert.equal(tracker.update([candidate('other', 0, -0.5), moved], { x: 0, y: 1.6, z: 0 }), moved);
 });
 
-test('TableTracker cycle order is fixed where the lock was made, so walking up to the cube still visits every table', () => {
+test('TableTracker cycle order is fixed where the lock was made, so walking up to the site still visits every table', () => {
   // The living_room tables from @iwer/sem, nearest-first from the origin.
   const tables = [
     candidate('t1', 1.26, -0.403),
@@ -284,7 +285,7 @@ test('TableTracker cycle order is fixed where the lock was made, so walking up t
   const visited = [tracker.lockedKey.name];
   const indices = [tracker.indexOf(tables, viewer)];
   for (let press = 0; press < 4; press++) {
-    // Walk to within half a metre of the cube's table before every press.
+    // Walk to within half a metre of the site's table before every press.
     const current = tables.find((t) => t.key === tracker.lockedKey).top.center;
     viewer = { x: current.x + 0.5, y: 1.6, z: current.z };
     assert.equal(tracker.update(tables, viewer).key, tracker.lockedKey); // still locked
@@ -319,6 +320,33 @@ test('bearingTo is positive to the right, negative to the left, null when undefi
   near(Math.abs(bearingTo({ x: 0, y: 0, z: 1 }, viewer)), Math.PI);
   assert.equal(bearingTo({ x: 0, y: 0, z: -1 }, { x: 0, y: 1.6, z: 0 }), null); // no forward
   assert.equal(bearingTo({ x: 0, y: 0, z: -1 }, { ...viewer, forward: { x: 0, y: -1, z: 0 } }), null); // looking straight down
+});
+
+test('quarterTurnToward turns the front (+Z) to the viewer in steps of 90 degrees', () => {
+  const centre = { x: 0, y: 0.7, z: -1.5 };
+  const at = (x, z) => ({ x, y: 1.6, z });
+  near(quarterTurnToward(at(0, 0), centre, 0), 0); // viewer on +Z: no turn
+  near(quarterTurnToward(at(2, -1.5), centre, 0), Math.PI / 2); // viewer on +X
+  near(quarterTurnToward(at(0, -3), centre, 0), Math.PI); // viewer behind
+  near(quarterTurnToward(at(-2, -1.5), centre, 0), (3 * Math.PI) / 2); // viewer on -X
+  // Relative to the table's yaw: a table turned 90 degrees needs a quarter turn less.
+  near(quarterTurnToward(at(2, -1.5), centre, Math.PI / 2), 0);
+  near(quarterTurnToward(at(0, 0), centre, -Math.PI / 2), Math.PI / 2);
+  assert.equal(quarterTurnToward(null, centre, 0), 0);
+  assert.equal(quarterTurnToward(at(0, -1.5), centre, 0), 0); // standing right over it
+});
+
+test('quarterTurnToward always leaves the front within 45 degrees of the viewer', () => {
+  const centre = { x: 0.3, y: 0.7, z: -1.2 };
+  for (let yaw = -Math.PI; yaw <= Math.PI; yaw += 0.37) {
+    for (let a = 0; a < 2 * Math.PI; a += 0.29) {
+      const viewer = { x: centre.x + 2 * Math.sin(a), y: 1.6, z: centre.z + 2 * Math.cos(a) };
+      const turn = quarterTurnToward(viewer, centre, yaw);
+      const front = { x: Math.sin(yaw + turn), z: Math.cos(yaw + turn) }; // three.js rotation.y of +Z
+      const cos = front.x * Math.sin(a) + front.z * Math.cos(a);
+      assert.ok(cos >= Math.SQRT1_2 - 1e-9, `yaw ${yaw.toFixed(2)}, viewer at ${a.toFixed(2)}: front is ${Math.acos(cos)} rad off`);
+    }
+  }
 });
 
 test('viewAngleTo measures the 3D angle from the gaze', () => {

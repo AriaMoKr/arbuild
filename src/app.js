@@ -1,9 +1,8 @@
 import * as THREE from 'three';
-import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { StatusPanel } from './statusPanel.js';
+import { createDigSite } from './digSite.js';
 import {
   clampOffset,
-  cubeReach,
   nextHue,
   readLeftStick,
   readRightController,
@@ -16,20 +15,17 @@ import {
   TableTracker,
   bearingTo,
   isTableLabel,
+  quarterTurnToward,
   tableTopFromMesh,
   tableTopFromPlane,
   viewAngleTo,
 } from './tableLocator.js';
 
-const CUBE_EDGE = 0.1; // metres
-const MAX_EDGE_FRACTION = 1 / 3; // never wider than a third of the table's shorter side
+const SITE_FIT = 0.9; // the dig site's footprint circle spans at most 90% of the table's shorter side
 const SURFACE_GAP = 0.001; // avoid z-fighting with the real table surface
-const CUBE_ROUNDING = 0.06; // corner radius as a fraction of the edge
-const SHADOW_SIZE = CUBE_EDGE * 1.9; // contact shadow width (anchor units)
-const SHADOW_LIFT = 0.0005;
 const SCAN_GRACE_MS = 3000; // Meta: scene data can take 2-3 s to arrive after the session starts
-const PLACED_HINT_MS = 4000; // how long the 'placed' hint stays up once the cube has been seen
-const SEEN_ANGLE = (40 * Math.PI) / 180; // cube within this angle of the gaze counts as seen
+const PLACED_HINT_MS = 4000; // how long the 'placed' hint stays up once the site has been seen
+const SEEN_ANGLE = (40 * Math.PI) / 180; // site within this angle of the gaze counts as seen
 
 // Scene features stay optional: if the user denies spatial data, the session still starts
 // and we can explain what's wrong instead of failing to enter AR at all.
@@ -76,10 +72,15 @@ export function initApp() {
   sun.position.set(0.6, 2, 0.8);
   scene.add(sun);
 
-  const { anchor, cube, shadow } = createTableCube();
+  // `anchor` sits on the table surface, turned to the table's yaw and scaled to fit it;
+  // the dig site spins on top of it.
+  const anchor = new THREE.Group();
+  anchor.visible = false;
+  const { site, paint, radius: siteRadius, height: siteHeight } = createDigSite();
+  anchor.add(site);
   scene.add(anchor);
-  // Cube look, driven by the right controller: thumbstick spins it, holding A cycles the hue.
-  const cubeHsl = cube.material.color.getHSL({ h: 0, s: 0, l: 0 }, THREE.SRGBColorSpace);
+  // Driven by the right controller: thumbstick spins the site, holding A cycles the excavator's paint.
+  const paintHsl = paint.color.getHSL({ h: 0, s: 0, l: 0 }, THREE.SRGBColorSpace);
   let spinDirection = -1;
 
   const panel = new StatusPanel(renderer);
@@ -95,8 +96,8 @@ export function initApp() {
     viewer: null,
     lockedKey: null,
     lockedAt: 0,
-    seenAt: null, // when the cube was first in view since the last table change
-    offset: { x: 0, z: 0 }, // cube position relative to the table centre, in the table's frame (left stick)
+    seenAt: null, // when the site was first in view since the last table change
+    offset: { x: 0, z: 0 }, // site position relative to the table centre, in the table's frame (left stick)
     roomCaptureUsed: false,
     state: 'idle',
   };
@@ -238,7 +239,6 @@ export function initApp() {
     const { candidates, sceneObjectCount } = findTables(frame, refSpace);
     run.candidates = candidates;
     const table = tracker.update(candidates, run.viewer);
-    // Spin first: the slide limits below depend on how the cube is turned.
     applyControllerInput(readRightController(xrSession.inputSources), dt);
 
     if (table) {
@@ -246,11 +246,13 @@ export function initApp() {
         run.lockedKey = tracker.lockedKey;
         run.lockedAt = time;
         run.seenAt = null;
-        run.offset = { x: 0, z: 0 }; // a new table starts with the cube at its centre
+        // A new table starts with the site at its centre, square to the table and facing the user.
+        run.offset = { x: 0, z: 0 };
+        site.rotation.y = quarterTurnToward(run.viewer, table.top.center, table.top.yaw);
       }
-      moveCube(readLeftStick(xrSession.inputSources), table.top, dt);
-      placeCube(table.top);
-      if (run.seenAt === null && run.viewer && viewAngleTo(cubeCentre(table.top), run.viewer) <= SEEN_ANGLE) {
+      moveSite(readLeftStick(xrSession.inputSources), table.top, dt);
+      placeSite(table.top);
+      if (run.seenAt === null && run.viewer && viewAngleTo(siteCentre(table.top), run.viewer) <= SEEN_ANGLE) {
         run.seenAt = time;
       }
     } else {
@@ -297,25 +299,25 @@ export function initApp() {
     if (!controller) return;
     const spin = spinVelocity(controller.stick, spinDirection);
     spinDirection = spin.direction;
-    cube.rotation.y += spin.velocity * dt; // about the cube's own vertical axis, on top of the table's yaw
+    site.rotation.y += spin.velocity * dt; // about the site's own vertical axis, on top of the table's yaw
     if (controller.aPressed) {
-      cubeHsl.h = nextHue(cubeHsl.h, dt); // the colour stays where it is when A is released
-      cube.material.color.setHSL(cubeHsl.h, cubeHsl.s, cubeHsl.l, THREE.SRGBColorSpace);
+      paintHsl.h = nextHue(paintHsl.h, dt); // the colour stays where it is when A is released
+      paint.color.setHSL(paintHsl.h, paintHsl.s, paintHsl.l, THREE.SRGBColorSpace);
     }
   }
 
-  function moveCube(stick, top, dt) {
+  function moveSite(stick, top, dt) {
     if (!stick) return;
     const heading = run.viewer && viewerHeading(run.viewer.forward, run.viewer.up);
     run.offset = slideOnTable(run.offset, stick, heading, top.yaw, slideLimits(top), dt);
   }
 
-  // How far the cube may move from the table centre and still sit fully on the table top.
-  // A spun cube reaches further along the table's axes, so spinning it at an edge
-  // nudges it inward.
+  // How far the site may move from the table centre and still stand fully on the table
+  // top, shadows included. Its footprint fits in a circle, so spinning it at an edge
+  // never pushes it over.
   function slideLimits(top) {
-    const reach = cubeReach(cubeEdge(top), CUBE_ROUNDING, cube.rotation.y);
-    return { x: Math.max(0, top.width / 2 - reach), z: Math.max(0, top.depth / 2 - reach) };
+    const r = siteRadius * siteScale(top);
+    return { x: Math.max(0, top.width / 2 - r), z: Math.max(0, top.depth / 2 - r) };
   }
 
   // The offset actually shown: kept on the table even if the table's outline shrinks.
@@ -323,7 +325,7 @@ export function initApp() {
     return clampOffset(run.offset, slideLimits(top));
   }
 
-  // Where the anchor goes: the table centre plus the cube's offset.
+  // Where the anchor goes: the table centre plus the site's offset.
   function anchorPosition(top) {
     const shift = tableOffsetToWorld(shownOffset(top), top.yaw);
     return { x: top.center.x + shift.x, y: top.center.y + SURFACE_GAP, z: top.center.z + shift.z };
@@ -333,39 +335,31 @@ export function initApp() {
     return run.candidates.find((c) => c.key === tracker.lockedKey)?.top ?? null;
   }
 
-  function cubeEdge(top) {
-    return Math.min(CUBE_EDGE, Math.min(top.width, top.depth) * MAX_EDGE_FRACTION);
+  // Full size, or smaller when the table is too small for the site's footprint.
+  function siteScale(top) {
+    return Math.min(1, (Math.min(top.width, top.depth) * SITE_FIT) / (2 * siteRadius));
   }
 
-  function cubeCentre(top) {
+  function siteCentre(top) {
     const base = anchorPosition(top);
-    return { x: base.x, y: base.y + cubeEdge(top) / 2, z: base.z };
+    return { x: base.x, y: base.y + (siteHeight * siteScale(top)) / 2, z: base.z };
   }
 
-  function placeCube(top) {
-    const edge = cubeEdge(top);
+  function placeSite(top) {
     const { x, y, z } = anchorPosition(top);
     anchor.position.set(x, y, z); // lifted along reference-space up, never the plane normal
     anchor.rotation.set(0, top.yaw, 0);
-    anchor.scale.setScalar(edge / CUBE_EDGE);
+    anchor.scale.setScalar(siteScale(top));
     anchor.visible = true;
-    fitShadowToTable(top, shownOffset(top), edge / CUBE_EDGE);
   }
 
-  // The contact shadow is wider than the cube. Near an edge, crop it to the table top
-  // so it doesn't hang in mid-air. The anchor's axes are the table's axes, so the
-  // visible part is an axis-aligned rectangle: shrink the plane to it and show the
-  // matching part of the texture. `scale` converts metres to anchor units.
-  function fitShadowToTable(top, offset, scale) {
-    const s = SHADOW_SIZE / 2;
-    const x0 = Math.max(-s, (-top.width / 2 - offset.x) / scale);
-    const x1 = Math.min(s, (top.width / 2 - offset.x) / scale);
-    const z0 = Math.max(-s, (-top.depth / 2 - offset.z) / scale);
-    const z1 = Math.min(s, (top.depth / 2 - offset.z) / scale);
-    shadow.position.set((x0 + x1) / 2, SHADOW_LIFT, (z0 + z1) / 2);
-    shadow.scale.set((x1 - x0) / (2 * s), (z1 - z0) / (2 * s), 1); // the plane's local y runs along anchor -z
-    shadow.material.map.offset.set((x0 + s) / (2 * s), (s - z1) / (2 * s));
-    shadow.material.map.repeat.set((x1 - x0) / (2 * s), (z1 - z0) / (2 * s));
+  // World-space box round the site's solid parts (not its shadows), for the e2e test.
+  function solidBounds() {
+    const box = new THREE.Box3();
+    site.traverse((o) => {
+      if (o.isMesh && !o.userData.shadow) box.expandByObject(o, true);
+    });
+    return box3ToArrays(box);
   }
 
   function describeState({ table, time, sceneObjectCount, spatialAllowed }) {
@@ -396,20 +390,20 @@ export function initApp() {
       case 'no-table':
         return { title: 'No table in your room setup', lines: ['Add a table (and label it Table) in Space Setup.', captureHint] };
       case 'placed': {
-        // Stay up until the user has actually seen the cube, then a few more seconds.
+        // Stay up until the user has actually seen the site, then a few more seconds.
         if (run.seenAt !== null && time - run.seenAt > PLACED_HINT_MS) return null;
         const count = run.candidates.length;
         const lines = [];
-        if (run.seenAt === null) lines.push(directionHint(cubeCentre(table.top)));
+        if (run.seenAt === null) lines.push(directionHint(siteCentre(table.top)));
         lines.push('Left stick moves it, right stick spins it.');
-        lines.push('Hold A to change its colour.');
+        lines.push('Hold A to repaint the excavator.');
         if (count > 1) {
           lines.push('Pull the trigger or pinch for the next table.');
           const index = tracker.indexOf(run.candidates, run.viewer) + 1;
           return { title: `Table ${index} of ${count}`, lines };
         }
         if (run.seenAt !== null) lines.push('It starts at the centre of your table.');
-        return { title: 'Cube placed', lines };
+        return { title: 'Excavator placed', lines };
       }
       default:
         return null;
@@ -452,16 +446,17 @@ export function initApp() {
       state: run.state,
       tableCount: run.candidates.length,
       tableIndex: tracker.indexOf(run.candidates, run.viewer),
-      cube: {
+      site: {
         visible: anchor.visible,
-        position: cube.getWorldPosition(new THREE.Vector3()).toArray(),
-        edge: CUBE_EDGE * anchor.scale.x,
+        position: anchor.getWorldPosition(new THREE.Vector3()).toArray(), // its base, on the table surface
+        scale: anchor.scale.x,
+        radius: siteRadius * anchor.scale.x,
         yaw: anchor.rotation.y,
-        spin: cube.rotation.y,
+        spin: site.rotation.y,
         offset: { ...run.offset },
         limits: lockedTop() ? slideLimits(lockedTop()) : null,
-        shadowBox: anchor.visible ? box3ToArrays(new THREE.Box3().setFromObject(shadow)) : null,
-        color: `#${cube.material.color.getHexString(THREE.SRGBColorSpace)}`,
+        bounds: anchor.visible ? solidBounds() : null,
+        color: `#${paint.color.getHexString(THREE.SRGBColorSpace)}`,
       },
       panel: panel.mesh.visible ? panel.key : null,
       enabledFeatures: renderer.xr.getSession()?.enabledFeatures ?? null,
@@ -471,47 +466,8 @@ export function initApp() {
   return api;
 }
 
-function createTableCube() {
-  // `anchor` sits on the table surface; the cube rests on it with a soft contact shadow.
-  const anchor = new THREE.Group();
-  anchor.visible = false;
-
-  const cube = new THREE.Mesh(
-    new RoundedBoxGeometry(CUBE_EDGE, CUBE_EDGE, CUBE_EDGE, 4, CUBE_EDGE * CUBE_ROUNDING),
-    new THREE.MeshStandardMaterial({ color: 0x3d7bff, roughness: 0.35, metalness: 0.05 }),
-  );
-  cube.position.y = CUBE_EDGE / 2;
-  anchor.add(cube);
-
-  const shadow = new THREE.Mesh(
-    new THREE.PlaneGeometry(SHADOW_SIZE, SHADOW_SIZE),
-    new THREE.MeshBasicMaterial({ map: createShadowTexture(), transparent: true, depthWrite: false, toneMapped: false }),
-  );
-  shadow.rotation.x = -Math.PI / 2;
-  shadow.position.y = SHADOW_LIFT;
-  anchor.add(shadow);
-
-  return { anchor, cube, shadow };
-}
-
 function box3ToArrays(box) {
   return { min: box.min.toArray(), max: box.max.toArray() };
-}
-
-function createShadowTexture() {
-  const size = 128;
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  gradient.addColorStop(0, 'rgba(0, 0, 0, 0.55)');
-  gradient.addColorStop(0.55, 'rgba(0, 0, 0, 0.25)');
-  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
 }
 
 function hasFeature(xrSession, feature) {

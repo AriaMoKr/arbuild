@@ -1,6 +1,6 @@
 # Table Cube
 
-A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a 10 cm cube at the centre of the table top. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
+A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres. It's about 42 × 20 cm, and shrinks to fit smaller tables. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
 
 ## Requirements
 
@@ -39,20 +39,20 @@ The app uses the room model from Space Setup, not live camera detection. In the 
 
 ## Using the app
 
-The cube goes on the nearest table in front of you, or the nearest table overall if none is in front of you. Until you've looked at it, the panel tells you which way to turn.
+The dig site goes on the nearest table in front of you, or the nearest table overall if none is in front of you. It lines up with the table's edges and is turned to face you. Until you've looked at it, the panel tells you which way to turn.
 
 | You see | What to do |
 | --- | --- |
-| The cube on a table | That's it. The cube follows the table's orientation and sits on its surface. |
-| "Table 1 of 3" | Pull the trigger or pinch to move the cube to the next table. Tables are counted outward from where you stood when the cube was first placed. |
+| The dig site on a table | That's it. It follows the table's orientation and stands on its surface. On a small table it's scaled down so every part, shadows included, stays on the table. |
+| "Table 1 of 3" | Pull the trigger or pinch to move the dig site to the next table. Tables are counted outward from where you stood when it was first placed. |
 | "No room setup found" / "No table in your room setup" | Pull the trigger or pinch to open Space Setup (once per AR session), or exit and use Settings › Physical space › Space setup. |
 | "Spatial data is blocked" | Exit AR and tap the site-info icon at the left of the address bar. On a normal HTTPS site it's a lock; on the dev server it's a **Not secure** warning. Set spatial data to **Allow**, and reload. |
-| Left thumbstick | Push it to slide the cube across the table: forward moves it away from you, right moves it to your right, whichever way the table is turned. It stops at the table's edge. Moving to another table puts the cube back at that table's centre. |
-| Right thumbstick | Push it to spin the cube slowly: right turns it clockwise, left anticlockwise, and the further you push the faster it turns. |
-| Hold **A** | The cube cycles through colours while you hold it, and keeps the colour it reached when you let go. |
+| Left thumbstick | Push it to slide the dig site across the table: forward moves it away from you, right moves it to your right, whichever way the table is turned. It stops at the table's edge. Moving to another table puts it back at that table's centre. |
+| Right thumbstick | Push it to spin the dig site slowly: right turns it clockwise, left anticlockwise, and the further you push the faster it turns. |
+| Hold **A** | The excavator's paint cycles through colours while you hold it, and keeps the colour it reached when you let go. |
 | Pinch does nothing | Use a controller trigger, or allow hand tracking from the same site-info icon and reload. |
 
-To leave AR, press the Meta button. Quest Browser shows controls near the address bar to resume or quit the immersive session. If something prevented the cube from appearing, the page repeats what to fix after you leave AR.
+To leave AR, press the Meta button. Quest Browser shows controls near the address bar to resume or quit the immersive session. If something prevented the dig site from appearing, the page repeats what to fix after you leave AR.
 
 ## Developing without a headset
 
@@ -70,17 +70,17 @@ Tests:
 
 ```bash
 npm test          # unit tests for the table geometry and selection logic
-npm run test:e2e  # headless Chrome + emulator: checks the cube lands on the right tables
+npm run test:e2e  # headless Chrome + emulator: checks the dig site lands on the right tables
 ```
 
 `test:e2e` needs Chrome or Edge installed (set `CHROME_PATH` if it isn't found) and writes screenshots to `e2e-output/`.
 
 ## How it works
 
-1. **Session.** `navigator.xr.requestSession('immersive-ar')` with `local-floor`, `plane-detection`, `mesh-detection` and `hand-tracking` as *optional* features. Making them optional means a denied permission doesn't block AR; the app checks `session.enabledFeatures` and explains what's missing instead. three.js renders with a transparent clear, so passthrough shows behind the cube.
+1. **Session.** `navigator.xr.requestSession('immersive-ar')` with `local-floor`, `plane-detection`, `mesh-detection` and `hand-tracking` as *optional* features. Making them optional means a denied permission doesn't block AR; the app checks `session.enabledFeatures` and explains what's missing instead. three.js renders with a transparent clear, so passthrough shows behind the dig site.
 2. **Finding tables.** Every frame, the app reads `frame.detectedPlanes` and keeps horizontal planes whose `semanticLabel` is `table` (or the older `desk`). If there are no such planes, it falls back to `frame.detectedMeshes` (Quest also exposes each table as a box volume).
-3. **Centre of the table.** The table top's polygon is in plane space. The app takes its area-weighted centroid and transforms it into the reference space. It never trusts the direction of the plane's normal: on Quest the table plane's +Y axis points *down*, so the cube is lifted along the reference space's up axis. Only the plane's yaw is copied, so the cube lines up with the table edges.
-4. **Which table.** The app picks the nearest table in front of you once (the nearest overall if none is in view), then stays locked on that `XRPlane` object, so the cube doesn't jump when you walk around. Trigger or pinch cycles through the tables, ordered by distance from where you stood when the first one was picked.
+3. **Centre of the table.** The table top's polygon is in plane space. The app takes its area-weighted centroid and transforms it into the reference space. It never trusts the direction of the plane's normal: on Quest the table plane's +Y axis points *down*, so the dig site is lifted along the reference space's up axis. Only the plane's yaw is copied, so the site lines up with the table edges.
+4. **Which table.** The app picks the nearest table in front of you once (the nearest overall if none is in view), then stays locked on that `XRPlane` object, so the dig site doesn't jump when you walk around. Trigger or pinch cycles through the tables, ordered by distance from where you stood when the first one was picked.
 5. **Messages.** Quest Browser has no DOM overlay in AR, so status text is drawn on a canvas panel that follows your head.
 
 The geometry and selection logic lives in [src/tableLocator.js](src/tableLocator.js) and has no three.js or browser dependency.
@@ -94,7 +94,8 @@ The geometry and selection logic lives in [src/tableLocator.js](src/tableLocator
 ```
 index.html              2D landing page with the Enter AR button
 src/main.js             entry point; loads the emulator in dev when needed
-src/app.js              renderer, AR session, per-frame table tracking, cube placement
+src/app.js              renderer, AR session, per-frame table tracking, dig site placement
+src/digSite.js          the dig site: excavator, operator, worker and rocks from boxes, cylinders and spheres
 src/tableLocator.js     table detection maths and table selection (pure, unit-tested)
 src/statusPanel.js      in-headset text panel
 src/emulation.js        dev-only Quest 3 emulator setup (IWER + synthetic rooms)

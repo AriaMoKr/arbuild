@@ -1,6 +1,6 @@
 // End-to-end check without a headset: runs the Vite dev server, drives headless
 // Chrome over the DevTools protocol, emulates a Quest 3 in Meta's synthetic rooms
-// (IWER + SEM) and checks where the cube lands. Screenshots go to e2e-output/.
+// (IWER + SEM) and checks where the dig site lands. Screenshots go to e2e-output/.
 //
 //   npm run test:e2e                 (set CHROME_PATH if Chrome/Edge isn't found)
 import { spawn } from 'node:child_process';
@@ -12,14 +12,13 @@ import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'e2e-output');
-const CUBE_EDGE = 0.1;
 const SURFACE_GAP = 0.001;
 const TOLERANCE = 0.01; // metres
 
 // Table-top centres in local-floor coordinates, read from @iwer/sem's captures.
 const MEETING_ROOM_TABLE = [0.069, 0.73, -1.572];
 const MEETING_ROOM_TABLE_WIDTH = 1.239; // along x (the table is turned only ~0.6 degrees)
-const CUBE_ROUNDING = 0.06; // corner radius / edge, as in src/app.js
+const MEETING_ROOM_TABLE_DEPTH = 2.145; // along z
 const LIVING_ROOM_TABLES = [
   [1.26, 0.455, -0.403],
   [-1.539, 0.789, 0.204],
@@ -49,7 +48,7 @@ function findBrowser() {
 const CDP_TIMEOUT_MS = 30000;
 
 async function launchBrowser() {
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'table-cube-e2e-'));
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'table-site-e2e-'));
   const proc = spawn(
     findBrowser(),
     [
@@ -196,8 +195,23 @@ function assertNear(actual, expected, label) {
   }
 }
 
-function cubeCentreFor(tableTop) {
-  return [tableTop[0], tableTop[1] + SURFACE_GAP + CUBE_EDGE / 2, tableTop[2]];
+/** Where the dig site's base should be: on the table top, lifted by the surface gap. */
+function siteBaseFor(tableTop) {
+  return [tableTop[0], tableTop[1] + SURFACE_GAP, tableTop[2]];
+}
+
+/** Throws unless the site's solid parts lie within the meeting room table's outline (it's turned only ~0.6 degrees). */
+function assertOnMeetingTable(site, label) {
+  const [x, y, z] = MEETING_ROOM_TABLE;
+  const { min, max } = site.bounds;
+  const slack = 0.003; // the table's slight turn, over the site's footprint
+  const inside =
+    min[0] >= x - MEETING_ROOM_TABLE_WIDTH / 2 - slack &&
+    max[0] <= x + MEETING_ROOM_TABLE_WIDTH / 2 + slack &&
+    min[2] >= z - MEETING_ROOM_TABLE_DEPTH / 2 - slack &&
+    max[2] <= z + MEETING_ROOM_TABLE_DEPTH / 2 + slack &&
+    min[1] >= y - 0.005; // the rocks sit a few millimetres into the ground
+  if (!inside) throw new Error(`${label}: site spans [${min.map((v) => v.toFixed(3))}] to [${max.map((v) => v.toFixed(3))}], off the table`);
 }
 
 function assertNoProblems(browser) {
@@ -213,7 +227,7 @@ async function openApp(browser, base, query) {
 
 async function enterAR(browser) {
   await browser.evaluate('window.__app.startAR()');
-  await browser.waitFor('window.__app.snapshot().cube.visible', { label: 'cube visible' });
+  await browser.waitFor('window.__app.snapshot().site.visible', { label: 'site visible' });
   return snapshot(browser);
 }
 
@@ -242,17 +256,24 @@ const scenarios = {
     return text;
   },
 
-  async 'meeting room: cube on the centre of the only table'(browser, base) {
+  async 'meeting room: dig site on the centre of the only table, facing the user'(browser, base) {
     await openApp(browser, base, 'emulate=1&env=meeting_room');
     const s = await enterAR(browser);
     if (s.referenceSpaceType !== 'local-floor') throw new Error(`reference space ${s.referenceSpaceType}`);
     if (!s.enabledFeatures.includes('plane-detection')) throw new Error('plane-detection not enabled');
     if (s.state !== 'placed' || s.tableCount !== 1) throw new Error(`state ${s.state}, tables ${s.tableCount}`);
-    assertNear(s.cube.position, cubeCentreFor(MEETING_ROOM_TABLE), 'cube centre');
-    if (Math.abs(s.cube.edge - CUBE_EDGE) > 1e-6) throw new Error(`cube edge ${s.cube.edge}`);
+    assertNear(s.site.position, siteBaseFor(MEETING_ROOM_TABLE), 'site base');
+    if (Math.abs(s.site.scale - 1) > 1e-6) throw new Error(`the site should be full size on this big table, got scale ${s.site.scale}`);
+    assertOnMeetingTable(s.site, 'centred');
+    // Its front (+Z, where the worker looks) faces the user, within 45 degrees.
+    const viewer = await browser.evaluate('(() => { const p = window.__iwer.xrDevice.position; return [p.x, p.y, p.z]; })()');
+    const facing = s.site.yaw + s.site.spin;
+    const toViewer = [viewer[0] - s.site.position[0], viewer[2] - s.site.position[2]];
+    const cos = (Math.sin(facing) * toViewer[0] + Math.cos(facing) * toViewer[1]) / Math.hypot(...toViewer);
+    if (cos < Math.SQRT1_2 - 1e-6) throw new Error(`the site faces ${((Math.acos(cos) * 180) / Math.PI).toFixed(0)}° away from the user`);
     const shots = [await browser.screenshot('meeting_room-default-view')];
 
-    // Walk up to the table and look down at the cube.
+    // Walk up to the table and look down at the site.
     await browser.evaluate(`(() => {
       const d = window.__iwer.xrDevice;
       d.position.set(0.07, 1.3, -0.55);
@@ -270,7 +291,7 @@ const scenarios = {
     return shots.join(', ');
   },
 
-  async 'meeting room: right stick spins the cube, holding A changes its colour'(browser, base) {
+  async 'meeting room: right stick spins the dig site, holding A repaints the excavator'(browser, base) {
     await openApp(browser, base, 'emulate=1&env=meeting_room');
     const start = await enterAR(browser);
     const right = 'window.__iwer.xrDevice.controllers.right';
@@ -279,24 +300,24 @@ const scenarios = {
     // Full right for 1 s: clockwise (negative), roughly 45 degrees at the slow max speed.
     await browser.evaluate(`(async () => { ${right}.updateAxes('thumbstick', 1, 0); await ${hold(1000)}; ${right}.updateAxes('thumbstick', 0, 0); await ${hold(100)}; })()`);
     const afterRight = await snapshot(browser);
-    const turned = afterRight.cube.spin - start.cube.spin;
+    const turned = afterRight.site.spin - start.site.spin;
     if (!(turned < -0.4 && turned > -1.6)) throw new Error(`stick right turned ${turned.toFixed(3)} rad`);
-    if (afterRight.cube.color !== start.cube.color) throw new Error('colour changed without A');
+    if (afterRight.site.color !== start.site.color) throw new Error('colour changed without A');
     await sleep(400);
-    if ((await snapshot(browser)).cube.spin !== afterRight.cube.spin) throw new Error('cube kept spinning after the stick was released');
+    if ((await snapshot(browser)).site.spin !== afterRight.site.spin) throw new Error('site kept spinning after the stick was released');
 
     // Full left for 0.5 s spins back the other way.
     await browser.evaluate(`(async () => { ${right}.updateAxes('thumbstick', -1, 0); await ${hold(500)}; ${right}.updateAxes('thumbstick', 0, 0); await ${hold(100)}; })()`);
     const afterLeft = await snapshot(browser);
-    if (!(afterLeft.cube.spin > afterRight.cube.spin + 0.2)) throw new Error(`stick left: spin ${afterRight.cube.spin} -> ${afterLeft.cube.spin}`);
+    if (!(afterLeft.site.spin > afterRight.site.spin + 0.2)) throw new Error(`stick left: spin ${afterRight.site.spin} -> ${afterLeft.site.spin}`);
 
     // Holding A cycles the colour; releasing keeps the colour it reached.
     await browser.evaluate(`(async () => { ${right}.updateButtonValue('a-button', 1); await ${hold(1000)}; ${right}.updateButtonValue('a-button', 0); await ${hold(100)}; })()`);
     const afterA = await snapshot(browser);
-    if (afterA.cube.color === start.cube.color) throw new Error(`colour unchanged after holding A (${afterA.cube.color})`);
-    if (afterA.cube.spin !== afterLeft.cube.spin) throw new Error('A button spun the cube');
+    if (afterA.site.color === start.site.color) throw new Error(`colour unchanged after holding A (${afterA.site.color})`);
+    if (afterA.site.spin !== afterLeft.site.spin) throw new Error('A button spun the site');
     await sleep(400);
-    if ((await snapshot(browser)).cube.color !== afterA.cube.color) throw new Error('colour kept changing after A was released');
+    if ((await snapshot(browser)).site.color !== afterA.site.color) throw new Error('colour kept changing after A was released');
 
     await browser.evaluate(`(() => {
       const d = window.__iwer.xrDevice;
@@ -309,10 +330,10 @@ const scenarios = {
     await browser.evaluate('window.__app.endAR()');
     await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
     assertNoProblems(browser);
-    return `spin ${start.cube.spin.toFixed(2)} → ${afterRight.cube.spin.toFixed(2)} → ${afterLeft.cube.spin.toFixed(2)} rad, colour ${start.cube.color} → ${afterA.cube.color}; ${shot}`;
+    return `spin ${start.site.spin.toFixed(2)} → ${afterRight.site.spin.toFixed(2)} → ${afterLeft.site.spin.toFixed(2)} rad, colour ${start.site.color} → ${afterA.site.color}; ${shot}`;
   },
 
-  async 'meeting room: left stick slides the cube across the table and stops at its edge'(browser, base) {
+  async 'meeting room: left stick slides the dig site across the table and stops at its edge'(browser, base) {
     await openApp(browser, base, 'emulate=1&env=meeting_room');
     const start = await enterAR(browser);
     const left = 'window.__iwer.xrDevice.controllers.left';
@@ -323,46 +344,44 @@ const scenarios = {
         ${left}.updateAxes('thumbstick', 0, 0);
         await new Promise((r) => setTimeout(r, 100));
       })()`);
-    const delta = (a, b) => b.cube.position.map((v, i) => v - a.cube.position[i]);
+    const delta = (a, b) => b.site.position.map((v, i) => v - a.site.position[i]);
 
-    // The emulated user faces -Z, so forward (stick y = -1) moves the cube towards -Z at 0.25 m/s.
+    // The emulated user faces -Z, so forward (stick y = -1) moves the site towards -Z at 0.25 m/s.
     await push(0, -1, 1000);
     const afterForward = await snapshot(browser);
     const [fx, fy, fz] = delta(start, afterForward);
     if (!(fz < -0.15 && fz > -0.4) || Math.abs(fx) > 0.02 || Math.abs(fy) > 1e-6) {
-      throw new Error(`forward push moved the cube by [${fx.toFixed(3)}, ${fy.toFixed(3)}, ${fz.toFixed(3)}]`);
+      throw new Error(`forward push moved the site by [${fx.toFixed(3)}, ${fy.toFixed(3)}, ${fz.toFixed(3)}]`);
     }
 
     // Right moves it towards +X.
     await push(1, 0, 600);
     const afterRight = await snapshot(browser);
     const [rx, , rz] = delta(afterForward, afterRight);
-    if (!(rx > 0.08 && rx < 0.3) || Math.abs(rz) > 0.02) throw new Error(`right push moved the cube by [${rx.toFixed(3)}, ${rz.toFixed(3)}]`);
+    if (!(rx > 0.08 && rx < 0.3) || Math.abs(rz) > 0.02) throw new Error(`right push moved the site by [${rx.toFixed(3)}, ${rz.toFixed(3)}]`);
     await sleep(300);
-    if (delta(afterRight, await snapshot(browser)).some((v) => Math.abs(v) > 1e-6)) throw new Error('cube drifted after the stick was released');
+    if (delta(afterRight, await snapshot(browser)).some((v) => Math.abs(v) > 1e-6)) throw new Error('site drifted after the stick was released');
 
     // Holding left long enough to cross the whole table stops at the table's edge.
     await push(-1, 0, 5000);
     const atEdge = await snapshot(browser);
-    const { offset, limits } = atEdge.cube;
+    const { offset, limits } = atEdge.site;
     if (Math.abs(offset.x) > limits.x + 1e-9 || Math.abs(offset.z) > limits.z + 1e-9) {
-      throw new Error(`cube left the table: offset ${JSON.stringify(offset)}, limits ${JSON.stringify(limits)}`);
+      throw new Error(`site left the table: offset ${JSON.stringify(offset)}, limits ${JSON.stringify(limits)}`);
     }
     const reach = Math.max(Math.abs(offset.x) / limits.x, Math.abs(offset.z) / limits.z);
-    if (Math.abs(reach - 1) > 1e-6) throw new Error(`expected the cube to stop at the edge, got ${reach.toFixed(3)} of the way`);
-    if (Math.abs(atEdge.cube.position[1] - start.cube.position[1]) > 1e-6) throw new Error('cube height changed while sliding');
+    if (Math.abs(reach - 1) > 1e-6) throw new Error(`expected the site to stop at the edge, got ${reach.toFixed(3)} of the way`);
+    if (Math.abs(atEdge.site.position[1] - start.site.position[1]) > 1e-6) throw new Error('site height changed while sliding');
 
-    // Check the edge against the scanned table, not just the app's own limits.
+    // Check the edge against the scanned table, not just the app's own limits: the site's
+    // footprint circle (shadows included) touches the edge, and every solid part is on the table.
     const tableLeft = MEETING_ROOM_TABLE[0] - MEETING_ROOM_TABLE_WIDTH / 2;
-    if (Math.abs(atEdge.cube.position[0] - (tableLeft + CUBE_EDGE / 2)) > TOLERANCE) {
-      throw new Error(`cube stopped at x=${atEdge.cube.position[0].toFixed(3)}, expected ${(tableLeft + CUBE_EDGE / 2).toFixed(3)} (table edge + half a cube)`);
+    if (Math.abs(atEdge.site.position[0] - (tableLeft + atEdge.site.radius)) > TOLERANCE) {
+      throw new Error(`site stopped at x=${atEdge.site.position[0].toFixed(3)}, expected ${(tableLeft + atEdge.site.radius).toFixed(3)} (table edge + footprint radius)`);
     }
-    // The contact shadow is cropped at the table edge instead of hanging in the air.
-    if (atEdge.cube.shadowBox.min[0] < tableLeft - 0.006) {
-      throw new Error(`shadow reaches x=${atEdge.cube.shadowBox.min[0].toFixed(3)}, past the table edge at ${tableLeft.toFixed(3)}`);
-    }
+    assertOnMeetingTable(atEdge.site, 'at the edge');
 
-    // Spinning at the edge widens the footprint, so the cube moves in to stay on the table.
+    // The footprint circle doesn't change with spin, so spinning at the edge keeps every part on the table.
     await browser.evaluate(`(async () => {
       const right = window.__iwer.xrDevice.controllers.right;
       right.updateAxes('thumbstick', 1, 0);
@@ -372,19 +391,17 @@ const scenarios = {
     })()`);
     await push(-1, 0, 500);
     const spunAtEdge = await snapshot(browser);
-    const spin = spunAtEdge.cube.spin;
-    const spunReach = (CUBE_EDGE / 2 - CUBE_EDGE * CUBE_ROUNDING) * (Math.abs(Math.cos(spin)) + Math.abs(Math.sin(spin))) + CUBE_EDGE * CUBE_ROUNDING;
-    if (Math.abs(spin) < 0.4) throw new Error(`right stick barely spun the cube (${spin.toFixed(3)} rad)`);
-    if (Math.abs(spunAtEdge.cube.position[0] - (tableLeft + spunReach)) > TOLERANCE) {
-      throw new Error(`spun cube stopped at x=${spunAtEdge.cube.position[0].toFixed(3)}, expected ${(tableLeft + spunReach).toFixed(3)} so its corners stay on the table`);
-    }
+    const spun = spunAtEdge.site.spin - atEdge.site.spin;
+    if (Math.abs(spun) < 0.4) throw new Error(`right stick barely spun the site (${spun.toFixed(3)} rad)`);
+    assertNear(spunAtEdge.site.position, atEdge.site.position, 'spun at the edge');
+    assertOnMeetingTable(spunAtEdge.site, 'spun at the edge');
 
-    const [cx, , cz] = atEdge.cube.position;
+    const [cx, , cz] = atEdge.site.position;
     await browser.evaluate(`(() => {
       const d = window.__iwer.xrDevice;
-      d.position.set(${cx + 0.35}, 1.3, ${cz + 0.45});
-      const pitch = -40 * Math.PI / 180, yaw = 35 * Math.PI / 180;
-      // yaw about Y, then pitch about X (YXZ), so the view looks down at the cube.
+      d.position.set(${cx + 0.45}, 1.35, ${cz + 0.65});
+      const pitch = -38 * Math.PI / 180, yaw = 35 * Math.PI / 180;
+      // yaw about Y, then pitch about X (YXZ), so the view looks down at the site.
       const cy = Math.cos(yaw / 2), sy = Math.sin(yaw / 2), cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
       d.quaternion.set(cy * sp, sy * cp, -sy * sp, cy * cp);
     })()`);
@@ -401,41 +418,42 @@ const scenarios = {
     let s = await enterAR(browser);
     if (s.tableCount !== 4) throw new Error(`expected 4 tables, got ${s.tableCount}`);
     if (s.tableIndex !== 0) throw new Error(`expected the nearest table, got index ${s.tableIndex}`);
-    assertNear(s.cube.position, cubeCentreFor(LIVING_ROOM_TABLES[0]), 'nearest table');
+    assertNear(s.site.position, siteBaseFor(LIVING_ROOM_TABLES[0]), 'nearest table');
     if (!s.panel?.startsWith('Table 1 of 4')) throw new Error(`hint panel: ${s.panel}`);
     // That table is ~70 degrees to the right of the starting gaze, so the panel points the way.
     if (!s.panel.includes('Turn right')) throw new Error(`expected a direction hint, got: ${s.panel}`);
     const shot = await browser.screenshot('living_room-nearest-table');
 
-    const visited = [s.cube.position];
-    // Nudge the cube off-centre with the left stick: the next table must still get it at its centre.
+    const visited = [s.site.position];
+    // Nudge the site off-centre with the left stick: the next table must still get it at its centre.
+    // Keep it short: the site nearly fills this table's depth, so a long push would reach an edge of its narrow side.
     await browser.evaluate(`(async () => {
       const left = window.__iwer.xrDevice.controllers.left;
       left.updateAxes('thumbstick', 1, -1);
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 300));
       left.updateAxes('thumbstick', 0, 0);
       await new Promise((r) => setTimeout(r, 100));
     })()`);
     const nudgedSnap = await snapshot(browser);
-    const nudged = nudgedSnap.cube.offset;
-    if (Math.hypot(nudged.x, nudged.z) < 0.05) throw new Error(`left stick didn't move the cube: ${JSON.stringify(nudged)}`);
+    const nudged = nudgedSnap.site.offset;
+    if (Math.hypot(nudged.x, nudged.z) < 0.04) throw new Error(`left stick didn't move the site: ${JSON.stringify(nudged)}`);
     // This table is turned about 90 degrees, so a yaw-sign or table-frame mix-up shows here.
-    // The user faces -Z: forward-right on the stick must move the cube equally towards +X and -Z in the room.
-    const [ndx, , ndz] = nudgedSnap.cube.position.map((v, i) => v - s.cube.position[i]);
-    if (!(ndx > 0.05 && ndz < -0.05 && Math.abs(ndx + ndz) < 0.02)) {
-      throw new Error(`stick forward-right moved the cube by [${ndx.toFixed(3)}, ${ndz.toFixed(3)}] in the room; expected equal +x and -z`);
+    // The user faces -Z: forward-right on the stick must move the site equally towards +X and -Z in the room.
+    const [ndx, , ndz] = nudgedSnap.site.position.map((v, i) => v - s.site.position[i]);
+    if (!(ndx > 0.03 && ndz < -0.03 && Math.abs(ndx + ndz) < 0.01)) {
+      throw new Error(`stick forward-right moved the site by [${ndx.toFixed(3)}, ${ndz.toFixed(3)}] in the room; expected equal +x and -z`);
     }
     if (Math.abs(Math.hypot(ndx, ndz) - Math.hypot(nudged.x, nudged.z)) > 1e-4) throw new Error('room displacement does not match the table-frame offset');
     for (let i = 1; i <= 4; i++) {
       s = await pressTrigger(browser);
       if (s.tableIndex !== i % 4) throw new Error(`press ${i}: expected index ${i % 4}, got ${s.tableIndex}`);
       if (s.panel?.startsWith(`Table ${(i % 4) + 1} of 4`) !== true) throw new Error(`press ${i}: hint panel ${s.panel}`);
-      visited.push(s.cube.position);
+      visited.push(s.site.position);
     }
     // Every table visited exactly once, then back to the first.
     for (const table of LIVING_ROOM_TABLES) {
-      if (!visited.slice(0, 4).some((p) => Math.hypot(...p.map((v, k) => v - cubeCentreFor(table)[k])) < TOLERANCE)) {
-        throw new Error(`table at [${table.join(', ')}] never got the cube`);
+      if (!visited.slice(0, 4).some((p) => Math.hypot(...p.map((v, k) => v - siteBaseFor(table)[k])) < TOLERANCE)) {
+        throw new Error(`table at [${table.join(', ')}] never got the site`);
       }
     }
     assertNear(visited[4], visited[0], 'wrap-around');
@@ -443,18 +461,19 @@ const scenarios = {
     return shot;
   },
 
-  async 'other rooms: cube rests on a table top'(browser, base) {
+  async 'other rooms: dig site stands on a table top'(browser, base) {
     const results = [];
     for (const env of ['office_small', 'office_large', 'music_room']) {
       await openApp(browser, base, `emulate=1&env=${env}`);
       const s = await enterAR(browser);
       if (s.state !== 'placed' || s.tableCount < 1) throw new Error(`${env}: state ${s.state}, tables ${s.tableCount}`);
-      const y = s.cube.position[1];
-      if (y < 0.3 || y > 2.1) throw new Error(`${env}: cube height ${y}`);
+      const y = s.site.position[1];
+      if (y < 0.3 || y > 2.1) throw new Error(`${env}: site height ${y}`);
       await browser.evaluate('window.__app.endAR()');
       await browser.waitFor('!window.__app.snapshot().presenting', { label: `${env} session ended` });
       assertNoProblems(browser);
-      results.push(`${env}: ${s.tableCount} table(s), cube y=${y.toFixed(3)}`);
+      if (!(s.site.scale > 0.5 && s.site.scale <= 1)) throw new Error(`${env}: site scale ${s.site.scale}`);
+      results.push(`${env}: ${s.tableCount} table(s), site y=${y.toFixed(3)} scale=${s.site.scale.toFixed(2)}`);
     }
     return results.join('; ');
   },

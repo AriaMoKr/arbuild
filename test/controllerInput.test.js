@@ -6,7 +6,6 @@ import {
   MAX_SPIN_SPEED,
   STICK_DEADZONE,
   clampOffset,
-  cubeReach,
   nextHue,
   readLeftStick,
   readRightController,
@@ -77,7 +76,7 @@ test('nextHue advances with time and wraps round the colour wheel', () => {
   assert.ok(nextHue(0.99, 0.2) < 1);
 });
 
-// ---------- left stick: sliding the cube across the table ----------
+// ---------- left stick: sliding the site across the table ----------
 
 const FORWARD = { x: 0, z: -1 }; // facing -Z, the reference space's default "ahead"
 const WIDE = { x: 10, z: 10 }; // limits that never clamp
@@ -107,7 +106,7 @@ test('viewerHeading uses the horizontal forward, or the view up vector when look
   assert.equal(viewerHeading(undefined, undefined), null);
 });
 
-test('slideOnTable: forward moves the cube away from the user, right moves it to their right', () => {
+test('slideOnTable: forward moves the site away from the user, right moves it to their right', () => {
   const step = MAX_MOVE_SPEED * 1; // full deflection for one second
   const forward = slideOnTable({ x: 0, z: 0 }, { x: 0, y: -1 }, FORWARD, 0, WIDE, 1);
   near(forward.x, 0);
@@ -131,7 +130,7 @@ test('slideOnTable is relative to the user, not to how the table is turned', () 
   }
 });
 
-test('slideOnTable keeps the cube on the table and ignores the dead zone', () => {
+test('slideOnTable keeps the site on the table and ignores the dead zone', () => {
   const limits = { x: 0.3, z: 0.1 };
   let offset = { x: 0, z: 0 };
   for (let i = 0; i < 100; i++) offset = slideOnTable(offset, { x: 1, y: 1 }, FORWARD, 0, limits, 0.1);
@@ -155,16 +154,6 @@ test('tableOffsetToWorld follows the anchor yaw convention', () => {
   const z = tableOffsetToWorld({ x: 0, z: 1 }, Math.PI / 2);
   near(z.x, 1);
   near(z.z, 0);
-});
-
-test('cubeReach grows from half an edge to the spun footprint and back', () => {
-  near(cubeReach(0.1, 0, 0), 0.05);
-  near(cubeReach(0.1, 0, Math.PI / 4), 0.05 * Math.SQRT2);
-  near(cubeReach(0.1, 0, Math.PI / 2), 0.05);
-  near(cubeReach(0.1, 0, -Math.PI / 4), 0.05 * Math.SQRT2);
-  // Rounded corners reach a little less: (h - r)√2 + r.
-  near(cubeReach(0.1, 0.06, Math.PI / 4), (0.05 - 0.006) * Math.SQRT2 + 0.006);
-  near(cubeReach(0.1, 0.06, 0), 0.05);
 });
 
 test('clampOffset bounds each axis independently', () => {
