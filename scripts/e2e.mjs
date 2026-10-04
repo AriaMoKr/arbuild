@@ -244,6 +244,35 @@ async function pressTrigger(browser) {
   return snapshot(browser);
 }
 
+/** Turn the emulated right controller so its ray points at a menu button, and wait for the hover. */
+async function aimAtMenuButton(browser, id) {
+  await browser.waitFor(`window.__app.snapshot().menu.buttons.${id}`, { label: `menu button ${id}` });
+  await browser.evaluate(`(() => {
+    const target = window.__app.snapshot().menu.buttons.${id};
+    const right = window.__iwer.xrDevice.controllers.right;
+    const from = [right.position.x, right.position.y, right.position.z];
+    let d = target.map((v, i) => v - from[i]);
+    const length = Math.hypot(...d);
+    d = d.map((v) => v / length);
+    // Rotation that turns the controller's -Z (its pointing direction) onto d.
+    const axis = [d[1], -d[0], 0]; // (0, 0, -1) x d
+    const sin = Math.hypot(...axis);
+    const angle = Math.atan2(sin, -d[2]);
+    const k = sin < 1e-9 ? 0 : Math.sin(angle / 2) / sin;
+    right.quaternion.set(axis[0] * k, axis[1] * k, axis[2] * k, Math.cos(angle / 2));
+  })()`);
+  await browser.waitFor(`window.__app.snapshot().menu.hovered === '${id}'`, { timeout: 3000, label: `hovering ${id}` });
+}
+
+async function clickTrigger(browser) {
+  await browser.evaluate(`(async () => {
+    const right = window.__iwer.xrDevice.controllers.right;
+    right.updateButtonValue('trigger', 1);
+    await new Promise((r) => setTimeout(r, 150));
+    right.updateButtonValue('trigger', 0);
+  })()`);
+}
+
 const scenarios = {
   async 'page without AR support explains itself'(browser, base) {
     await browser.goto(`${base}?emulate=0`);
@@ -411,6 +440,42 @@ const scenarios = {
     await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
     assertNoProblems(browser);
     return `forward Δz=${fz.toFixed(3)}, right Δx=${rx.toFixed(3)}, stopped at offset (${offset.x.toFixed(3)}, ${offset.z.toFixed(3)}); ${shot}`;
+  },
+
+  async 'menu on the left controller: version line, Exit AR and Reload page'(browser, base) {
+    await openApp(browser, base, 'emulate=1&env=living_room');
+    const version = await browser.waitFor('document.getElementById("version").textContent', { label: 'version line' });
+    if (!/^Updated /.test(version)) throw new Error(`version line: ${version}`);
+
+    let s = await enterAR(browser);
+    await browser.waitFor('window.__app.snapshot().menu.visible', { label: 'menu visible' });
+    s = await snapshot(browser);
+    if (s.menu.holder !== 'left controller') throw new Error(`menu holder: ${s.menu.holder}`);
+    const table = s.tableIndex;
+
+    // Exit AR: pointing at the button and pulling the trigger ends the session, and the
+    // trigger pull must not also move the dig site to another table.
+    await aimAtMenuButton(browser, 'exit');
+    const shot = await browser.screenshot('menu-hovering-exit');
+    await clickTrigger(browser);
+    await browser.waitFor('!window.__app.snapshot().presenting', { timeout: 3000, label: 'session ended by Exit AR' });
+    s = await snapshot(browser);
+    if (s.tableIndex !== -1 && s.tableIndex !== table) throw new Error('the Exit AR press also switched tables');
+    const status = await browser.evaluate('document.getElementById("status").textContent');
+    if (!/Session ended/.test(status)) throw new Error(`status after Exit AR: ${status}`);
+
+    // Reload page: the page reloads (the marker disappears) and comes back ready.
+    await enterAR(browser);
+    await browser.waitFor('window.__app.snapshot().menu.visible', { label: 'menu visible again' });
+    await browser.evaluate('window.__reloadMarker = 1');
+    await aimAtMenuButton(browser, 'reload');
+    await clickTrigger(browser).catch(() => {}); // the page may unload mid-call
+    await browser.waitFor('window.__reloadMarker === undefined && window.__app && !window.__app.snapshot().presenting', {
+      timeout: 15000,
+      label: 'page reloaded',
+    });
+    assertNoProblems(browser);
+    return `${version}; ${shot}`;
   },
 
   async 'living room: nearest of four tables, trigger cycles through all'(browser, base) {

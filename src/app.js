@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { StatusPanel } from './statusPanel.js';
+import { XrMenu } from './xrMenu.js';
 import { createDigSite } from './digSite.js';
 import {
   clampOffset,
@@ -85,6 +86,10 @@ export function initApp() {
 
   const panel = new StatusPanel(renderer);
   scene.add(panel.mesh);
+
+  // Exit AR / Reload page / "Updated …", above the left hand (src/xrMenu.js).
+  const menu = new XrMenu({ onExit: () => endAR(), onReload: () => location.reload() });
+  scene.add(menu.root);
 
   const tracker = new TableTracker();
   let activeReferenceSpaceType = null;
@@ -182,6 +187,7 @@ export function initApp() {
     run.state = 'idle';
     anchor.visible = false;
     panel.show(null);
+    menu.hide();
     setButton('Enter AR', false);
     if (startError) {
       setStatus(startError, 'error');
@@ -191,10 +197,18 @@ export function initApp() {
     }
   });
 
-  // Trigger or pinch: next table when there are several, otherwise offer Space Setup.
-  function onSelect() {
+  // Trigger or pinch: presses a menu button when pointing at one; otherwise the next table
+  // when there are several, or Space Setup when there's no table.
+  function onSelect(event) {
     const xrSession = renderer.xr.getSession();
     if (!xrSession) return;
+    if (event?.frame && event.inputSource) {
+      const button = menu.buttonFor(event.frame, event.inputSource, renderer.xr.getReferenceSpace());
+      if (button) {
+        menu.press(button);
+        return;
+      }
+    }
     if (run.candidates.length > 1) {
       tracker.next(run.candidates, run.viewer);
       return;
@@ -241,6 +255,7 @@ export function initApp() {
         up: { x: m[4], y: m[5], z: m[6] }, // the view's +Y axis
       };
     }
+    menu.update(frame, refSpace, run.viewer);
 
     const { candidates, sceneObjectCount } = findTables(frame, refSpace);
     run.candidates = candidates;
@@ -462,7 +477,9 @@ export function initApp() {
   const api = {
     startAR,
     endAR,
-    selectNext: onSelect,
+    selectNext: () => onSelect(),
+    /** Shows when the app last changed ("Updated …") on the in-AR menu. */
+    setVersion: (text) => menu.setVersion(text),
     snapshot: () => ({
       presenting: renderer.xr.isPresenting,
       state: run.state,
@@ -497,6 +514,7 @@ export function initApp() {
         locked: c.key === tracker.lockedKey,
       })),
       inputs: [...(renderer.xr.getSession()?.inputSources ?? [])].map(describeInput),
+      menu: menu.snapshot(),
     }),
   };
   return api;

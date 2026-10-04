@@ -106,3 +106,14 @@ li + li {
 #status[data-tone='error'] {
   color: var(--error);
 }
+
+.version {
+  margin: 24px 0 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-align: right;
+}
+
+.version:empty {
+  display: none;
+}

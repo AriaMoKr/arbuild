@@ -52,9 +52,10 @@ The dig site goes on the nearest table in front of you, or the nearest table ove
 | Left thumbstick | Push it to slide the dig site across the table: forward moves it away from you, right moves it to your right, whichever way the table is turned. It stops at the table's edge. Moving to another table puts it back at that table's centre. |
 | Right thumbstick | Push it to spin the dig site slowly: right turns it clockwise, left anticlockwise, and the further you push the faster it turns. |
 | Hold **A** | The excavator's paint cycles through colours while you hold it, and keeps the colour it reached when you let go. |
+| The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload page** reloads the app (handy after a code change, since the browser's own controls are out of reach in AR). Its bottom line shows when the app's files last changed ("Updated …"), the same as at the bottom of the page, so you can tell whether the headset is running the latest version. |
 | Pinch does nothing | Use a controller trigger, or allow hand tracking from the same site-info icon and reload. |
 
-To leave AR, press the Meta button. Quest Browser shows controls near the address bar to resume or quit the immersive session. If something prevented the dig site from appearing, the page repeats what to fix after you leave AR.
+To leave AR, use **Exit AR** on the menu above your left hand, or press the Meta button: Quest Browser shows controls near the address bar to resume or quit the immersive session. If something prevented the dig site from appearing, the page repeats what to fix after you leave AR.
 
 ## Developing without a headset
 
@@ -104,10 +105,12 @@ src/app.js              renderer, AR session, per-frame table tracking, dig site
 src/digSite.js          the dig site: excavator, operator, worker and rocks from boxes, cylinders and spheres
 src/tableLocator.js     table detection maths and table selection (pure, unit-tested)
 src/statusPanel.js      in-headset text panel
+src/xrMenu.js           in-AR menu above the left hand: Exit AR, Reload page, "Updated …"
+src/version.js          fetches ./__version.json, when the app's files last changed
 src/emulation.js        dev-only Quest 3 emulator setup (IWER + synthetic rooms)
 src/debugChannel.js     dev-only: sends console output, errors and state to the dev server
 test/                   unit tests (node --test)
 scripts/e2e.mjs         headless end-to-end test
-scripts/vite-plugins.mjs  dev server extras: the plain-HTTP port and the debug log endpoint
+scripts/vite-plugins.mjs  dev server extras: the plain-HTTP port, the debug log endpoint and ./__version.json
 vite.config.js          HTTPS dev server on the LAN, build settings
 ```

@@ -38,6 +38,54 @@ export function plainHttp({ port }) {
   };
 }
 
+/**
+ * Serves ./__version.json: when the app's source files last changed, so the page can show
+ * which version it's running ("Updated …"). The dev server works it out on every request,
+ * because the files change while it runs; a production build writes the file into dist/.
+ * `sources` are paths relative to the project root (files or folders, dotfiles skipped).
+ */
+export function siteVersion({ sources }) {
+  const newest = (root) => {
+    let best = null;
+    const visit = (p) => {
+      let stat;
+      try {
+        stat = fs.statSync(p);
+      } catch {
+        return;
+      }
+      if (stat.isDirectory()) {
+        for (const name of fs.readdirSync(p)) if (!name.startsWith('.')) visit(path.join(p, name));
+      } else if (stat.isFile() && (!best || stat.mtimeMs > best.mtimeMs)) {
+        best = { path: p, mtimeMs: stat.mtimeMs };
+      }
+    };
+    for (const source of sources) visit(path.resolve(root, source));
+    return {
+      changed: best ? new Date(best.mtimeMs).toISOString() : null,
+      file: best ? path.relative(root, best.path).split(path.sep).join('/') : null,
+    };
+  };
+
+  let root = process.cwd();
+  return {
+    name: 'table-cube:site-version',
+    configResolved(config) {
+      root = config.root;
+    },
+    configureServer(server) {
+      server.middlewares.use('/__version.json', (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify(newest(root)));
+      });
+    },
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: '__version.json', source: JSON.stringify(newest(root)) });
+    },
+  };
+}
+
 const MAX_BODY = 512 * 1024;
 
 /**

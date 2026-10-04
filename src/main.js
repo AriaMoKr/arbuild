@@ -39,3 +39,12 @@ const { initApp } = await import('./app.js');
 const app = initApp();
 if (import.meta.env.DEV) window.__app = app; // test hook for scripts/e2e.mjs
 debug?.watch(app.snapshot);
+
+// "Updated …": when the app's files last changed, so you can tell which version is running.
+const { fetchVersion } = await import('./version.js');
+fetchVersion().then((version) => {
+  if (!version) return;
+  document.getElementById('version').textContent = version.text;
+  app.setVersion(version.text);
+  debug?.log('version', { changed: version.changed, file: version.file });
+});

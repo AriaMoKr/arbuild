@@ -88,6 +88,10 @@ export function startDebugChannel() {
   flush();
 
   return {
+    /** Record a one-off entry, e.g. log('version', { changed, file }). */
+    log(kind, data) {
+      push(kind, data);
+    },
     /** Start sending app state snapshots from `fn()`. */
     watch(fn) {
       snapshot = fn;
