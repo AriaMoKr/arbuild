@@ -301,13 +301,17 @@ const scenarios = {
   async 'meeting room: dig site on the centre of the only table, facing the user'(browser, base) {
     await openApp(browser, base, 'emulate=1&env=meeting_room');
     // Enter AR only enables after the shaders are compiled; entering AR must not compile any more.
-    const precompiled = await waitForDebugLog(/^\[shaders\] precompiled \d+ shader programs/);
-    const programsBefore = (await snapshot(browser)).programs;
+    // Nor upload any more geometry: the warm-up draw already did.
+    const precompiled = await waitForDebugLog(/^\[shaders\] precompiled \d+ shader programs, \d+ textures and \d+ meshes/);
+    const before = await snapshot(browser);
     const s = await enterAR(browser);
     await sleep(500); // a few more frames with the site, panel and menu on screen
-    const programsAfter = (await snapshot(browser)).programs;
-    if (!(programsBefore > 0) || programsAfter !== programsBefore) {
-      throw new Error(`shader programs: ${programsBefore} before AR, ${programsAfter} in AR; precompile missed some (${precompiled})`);
+    const after = await snapshot(browser);
+    if (!(before.programs > 0) || after.programs !== before.programs) {
+      throw new Error(`shader programs: ${before.programs} before AR, ${after.programs} in AR; precompile missed some (${precompiled})`);
+    }
+    if (!(before.geometries > 50) || after.geometries !== before.geometries) {
+      throw new Error(`GPU geometries: ${before.geometries} before AR, ${after.geometries} in AR; the warm-up draw missed some (${precompiled})`);
     }
     if (s.referenceSpaceType !== 'local-floor') throw new Error(`reference space ${s.referenceSpaceType}`);
     if (!s.enabledFeatures.includes('plane-detection')) throw new Error('plane-detection not enabled');

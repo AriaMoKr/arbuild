@@ -515,12 +515,43 @@ export function initApp() {
         if (o.material?.map) textures.add(o.material.map);
       });
       for (const texture of textures) renderer.initTexture(texture);
+      const meshes = warmUpDraw();
       console.info(
-        `[shaders] precompiled ${renderer.info.programs.length} shader programs and ${textures.size} textures in ${Math.round(performance.now() - start)} ms`,
+        `[shaders] precompiled ${renderer.info.programs.length} shader programs, ${textures.size} textures and ${meshes} meshes in ${Math.round(performance.now() - start)} ms`,
       );
     } catch (err) {
       console.warn('Shader precompile failed; shaders will compile on first use instead:', err);
     }
+  }
+
+  // compile() doesn't upload geometry: on the Quest the frame where the dig site first
+  // appeared still spent 35-46 ms rendering, and only in a freshly loaded page. So draw
+  // the whole scene once, everything shown and nothing culled, into a 1x1-pixel scissor
+  // box of the page's canvas (behind the 2D page, cleared straight after). That uploads
+  // every mesh's buffers and creates its vertex arrays. The canvas has the same output
+  // colour space as AR, so this reuses the compiled shaders. Returns the mesh count.
+  function warmUpDraw() {
+    const saved = [];
+    let meshes = 0;
+    scene.traverse((o) => {
+      saved.push([o, o.visible, o.frustumCulled]);
+      o.visible = true;
+      o.frustumCulled = false;
+      if (o.isMesh) meshes++;
+    });
+    try {
+      renderer.setScissorTest(true);
+      renderer.setScissor(0, 0, 1, 1);
+      renderer.render(scene, camera);
+    } finally {
+      renderer.setScissorTest(false);
+      renderer.clear();
+      for (const [o, visible, culled] of saved) {
+        o.visible = visible;
+        o.frustumCulled = culled;
+      }
+    }
+    return meshes;
   }
 
   const api = {
@@ -553,6 +584,7 @@ export function initApp() {
       referenceSpaceType: renderer.xr.isPresenting ? activeReferenceSpaceType : null,
       // Extra detail for the debug channel (src/debugChannel.js).
       programs: renderer.info.programs?.length ?? null, // should not grow after entering AR (see precompile)
+      geometries: renderer.info.memory.geometries, // nor should this (see warmUpDraw)
       fps: frameStats.fps,
       worstFrameMs: frameStats.worstFrameMs,
       viewer: run.viewer ? [run.viewer.x, run.viewer.y, run.viewer.z].map((v) => round(v)) : null,
