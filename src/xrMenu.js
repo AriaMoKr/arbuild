@@ -1,22 +1,26 @@
 import * as THREE from 'three';
 
 // A small in-AR menu above the left controller (or the left hand): Exit AR, Reload page,
-// Sound on/off, and when the app last changed. Point at it with the other hand's controller (or pinch
-// ray); a ray shows where you're pointing, and the trigger or a pinch presses the button.
-// The browser's own controls are out of reach in AR, which is why this exists.
+// Sound on/off, Steering relative/absolute, and when the app last changed. Point at it with
+// the other hand's controller (or pinch ray); a ray shows where you're pointing, and the
+// trigger or a pinch presses the button. The browser's own controls are out of reach in AR,
+// which is why this exists.
 
 const CANVAS_W = 640;
-const CANVAS_H = 260;
+const CANVAS_H = 350;
+export const MENU_CANVAS = { width: CANVAS_W, height: CANVAS_H };
 const MENU_WIDTH_M = 0.18;
 const MENU_HEIGHT_M = (MENU_WIDTH_M * CANVAS_H) / CANVAS_W;
 const LIFT_M = 0.1; // how far above the holding hand the menu floats
 const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+const VERSION_Y = 305; // the "Updated …" line, under the buttons
 
-/** Button rectangles in canvas pixels (y down). */
+/** Button rectangles in canvas pixels (y down). Labels of sound and steering are set by setLabel(). */
 export const MENU_BUTTONS = [
   { id: 'exit', label: 'Exit AR', x: 24, y: 24, w: 188, h: 120 },
   { id: 'reload', label: '↻ Reload', x: 226, y: 24, w: 188, h: 120 },
-  { id: 'sound', label: 'Sound', x: 428, y: 24, w: 188, h: 120 }, // label set by setLabel()
+  { id: 'sound', label: 'Sound', x: 428, y: 24, w: 188, h: 120 },
+  { id: 'steering', label: 'Steering', x: 24, y: 160, w: 592, h: 100 },
 ];
 
 /**
@@ -30,8 +34,8 @@ export function buttonAt(u, v, buttons = MENU_BUTTONS) {
 }
 
 export class XrMenu {
-  constructor({ onExit, onReload, onSound }) {
-    this.actions = { exit: onExit, reload: onReload, sound: onSound };
+  constructor({ onExit, onReload, onSound, onSteering }) {
+    this.actions = { exit: onExit, reload: onReload, sound: onSound, steering: onSteering };
     this.labels = {};
     this.version = '';
     this.hovered = null;
@@ -224,7 +228,7 @@ export class XrMenu {
 
     g.fillStyle = '#c9d1e0';
     g.font = `400 30px ${FONT}`;
-    g.fillText(this.version || 'Updated: unknown', CANVAS_W / 2, 205, CANVAS_W - 48);
+    g.fillText(this.version || 'Updated: unknown', CANVAS_W / 2, VERSION_Y, CANVAS_W - 48);
     this.texture.needsUpdate = true;
   }
 }

@@ -1,6 +1,6 @@
 # Table Cube
 
-A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres. It's about 42 × 20 cm, and shrinks to fit smaller tables. The excavator digs on a loop (reach into the pile, scoop, lift, dump) with engine, hydraulic and rock sounds coming from it (off until you turn them on from the menu). On Quest 3 your hands and real objects in front of it hide it, using the headset's depth sensing. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
+A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres. It's about 42 × 20 cm, and shrinks to fit smaller tables. You drive the excavator round the table top, swing its cab and dig with it (reach into the pile, scoop, lift, dump), with engine, hydraulic and rock sounds coming from it (off until you turn them on from the menu). On Quest 3 your hands and real objects in front of it hide it, using the headset's depth sensing. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
 
 ## Requirements
 
@@ -41,7 +41,7 @@ The app uses the room model from Space Setup, not live camera detection. In the 
 
 ## Using the app
 
-The dig site goes on the nearest table, preferring one in front of you when it's about as close (a table you're not facing counts as 1.5 m further away). While the room's tables are still arriving at the start of a session the app keeps re-picking, until you choose a table yourself or slide or spin the site. It lines up with the table's edges and is turned to face you. Until you've looked at it, the panel tells you which way to turn.
+The dig site goes on the nearest table, preferring one in front of you when it's about as close (a table you're not facing counts as 1.5 m further away). While the room's tables are still arriving at the start of a session the app keeps re-picking, until you choose a table yourself or start driving or digging. It lines up with the table's edges and is turned to face you. Until you've looked at it, the panel tells you which way to turn.
 
 | You see | What to do |
 | --- | --- |
@@ -49,11 +49,12 @@ The dig site goes on the nearest table, preferring one in front of you when it's
 | "Table 1 of 3" | Pull the trigger or pinch to move the dig site to the next table. Tables are counted outward from where you stood when it was first placed. |
 | "No room setup found" / "No table in your room setup" | Pull the trigger or pinch to open Space Setup (once per AR session), or exit and use Settings › Physical space › Space setup. |
 | "Spatial data is blocked" | Exit AR and tap the site-info icon at the left of the address bar. On a normal HTTPS site it's a lock; on the dev server it's a **Not secure** warning. Set spatial data to **Allow**, and reload. |
-| Left thumbstick | Push it to slide the dig site across the table: forward moves it away from you, right moves it to your right, whichever way the table is turned. It stops at the table's edge. Moving to another table puts it back at that table's centre. |
-| Right thumbstick | Push it to spin the dig site slowly: right turns it clockwise, left anticlockwise, and the further you push the faster it turns. |
-| Hold **A** | The excavator's paint cycles through colours while you hold it, and keeps the colour it reached when you let go. |
+| Left thumbstick | Drives the excavator. It only ever drives forwards or backwards along the way it faces, like a real one: it speeds up and slows down smoothly, and stops at the table's edge (its arm may reach over) and when it bumps into the worker or the rocks. How the stick steers is set by **Steering** on the menu: **relative** (the default) means forward/back drives and left/right turns it on the spot, wherever you stand; **absolute** means push the way you want it to go, as you see it, and it turns to face that way and drives there. Moving to another table parks it back where it started. |
+| Right thumbstick | Swings the cab (with the operator and the arm) round on the wheels: right swings it clockwise, left anticlockwise. |
+| Hold **A** | The arm digs while you hold it: reach, scoop, lift, dump and back. Let go and it stops where it is. |
+| Hold **B** | The excavator's paint cycles through colours while you hold it, and keeps the colour it reached when you let go. |
 | **Sound off / Sound on** on the menu | Turns the dig site's sound on or off. It starts off, and your choice is remembered in this browser. |
-| The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload** reloads the app, **Sound** turns the sound on or off (handy after a code change, since the browser's own controls are out of reach in AR). Its bottom line shows when the app's files last changed ("Updated …"), the same as under the title on the page, so you can tell whether the headset is running the latest version. |
+| The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload** reloads the app, **Sound** turns the sound on or off, **Steering** switches between relative and absolute steering (remembered too). Reload is handy after a code change, since the browser's own controls are out of reach in AR. Its bottom line shows when the app's files last changed ("Updated …"), the same as under the title on the page, so you can tell whether the headset is running the latest version. |
 | Pinch does nothing | Use a controller trigger, or allow hand tracking from the same site-info icon and reload. |
 
 To leave AR, use **Exit AR** on the menu above your left hand, or press the Meta button: Quest Browser shows controls near the address bar to resume or quit the immersive session. If something prevented the dig site from appearing, the page repeats what to fix after you leave AR.
@@ -106,11 +107,12 @@ index.html              2D landing page with the Enter AR button
 src/main.js             entry point; loads the emulator in dev when needed
 src/app.js              renderer, AR session, per-frame table tracking, dig site placement
 src/digSite.js          the dig site: excavator, operator, worker and rocks from boxes, cylinders and spheres, and its dig cycle
+src/excavatorDrive.js   driving and swinging the excavator from the thumbsticks (pure, unit-tested)
 src/siteSound.js        engine, hydraulics and rock sounds, made with WebAudio and placed at the excavator
 src/occlusion.js        soft depth occlusion added to the dig site's materials
 src/tableLocator.js     table detection maths and table selection (pure, unit-tested)
 src/statusPanel.js      in-headset text panel
-src/xrMenu.js           in-AR menu above the left hand: Exit AR, Reload page, "Updated …"
+src/xrMenu.js           in-AR menu above the left hand: Exit AR, Reload page, Sound, Steering, "Updated …"
 src/frameTrace.js       times each frame of a session's first seconds, for the debug log
 src/version.js          fetches ./__version.json, when the app's files last changed
 src/emulation.js        dev-only Quest 3 emulator setup (IWER + synthetic rooms)

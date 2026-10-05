@@ -21,6 +21,10 @@ const EYE = 0x1e2124;
 
 const deg = THREE.MathUtils.degToRad;
 
+const HOME = { x: 190, z: -30 }; // where the excavator stands in the model, facing the rocks (-X)
+const WHEEL_RADIUS = 52;
+const HALF_TRACK = 85; // from the excavator's centre line to each row of wheels
+
 /**
  * The excavator's dig cycle, as joint angles (degrees, on top of the modelled pose) at
  * key times (seconds). Positive boom lowers it, positive arm folds it in towards the
@@ -78,16 +82,22 @@ function maxJointSpeed() {
 }
 
 /**
- * Builds the dig site. Returns { site, paint, radius, height, lowest, armLowest, excavator, animate }: `site`
- * is a group with its footprint centred on the origin and its base at y = 0, in metres;
- * `paint` is the excavator's paint material; `radius` is the horizontal radius (metres)
- * of a circle round the origin that holds the whole footprint, shadows included,
- * whichever way the site is spun and wherever the dig cycle has the arm; `height` is
- * the tallest point and `lowest` the lowest solid point over the cycle (metres; the
- * rocks sit a few mm into the table on purpose), `armLowest` the moving arm's lowest
- * point (the bucket must never go below the table, 0). `animate(t)` poses the site for time `t`
- * (seconds) and returns digPose(t). Shadow meshes are marked with `userData.shadow`.
- * `shadowTexture` defaults to a soft radial gradient (needs a DOM canvas).
+ * Builds the dig site. `site` is a group with its footprint centred on the origin and its
+ * base at y = 0, in metres; `paint` is the excavator's paint material; `radius` is the
+ * horizontal radius (metres) of a circle round the origin that holds the whole footprint
+ * with the excavator at home, shadows included, whichever way the site is spun and
+ * wherever the dig cycle has the arm; `height` is the tallest point and `lowest` the
+ * lowest solid point over the cycle (metres; the rocks sit a few mm into the table on
+ * purpose), `armLowest` the moving arm's lowest point (the bucket must never go below
+ * the table, 0). `animate(t, dig)` poses the arm for dig time `dig` and the heads for
+ * time `t` (seconds) and returns digPose(dig). Shadow meshes are marked with
+ * `userData.shadow`. `shadowTexture` defaults to a soft radial gradient (needs a DOM canvas).
+ *
+ * For driving (src/excavatorDrive.js), in the model frame (design units, the frame the
+ * excavator moves in): `home` is where the excavator starts ({ x, z, heading }),
+ * `bodyRadius` the circle round its centre that holds its body however it turns and
+ * swings (the arm left out), `obstacles` the circles { x, z, r } round the worker and the
+ * rock pile, and `origin` the site's own origin. `setDrive(state)` moves the excavator.
  */
 export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
   const model = new THREE.Group(); // design units
@@ -133,25 +143,36 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
   };
 
   // ---------- Excavator ----------
+  // Two parts, as on a real wheeled excavator: the chassis on its wheels (`excavator`,
+  // which drives: setDrive() moves and turns it, its front is -X) and the house on top
+  // (`house`: body, cab, operator and arm), which swings round on the chassis's centre.
   const excavator = new THREE.Group();
-  excavator.position.set(190, 0, -30);
+  excavator.position.set(HOME.x, 0, HOME.z);
   model.add(excavator);
-  for (const [x, z] of [[-130, 85], [130, 85], [-130, -85], [130, -85]]) {
-    cylinder(excavator, 52, 34, 12, TYRE, [x, 53, z], alongZ);
-    cylinder(excavator, 24, 36, 10, HUB, [x, 53, z], alongZ);
+  const wheels = [];
+  for (const [x, z] of [[-130, HALF_TRACK], [130, HALF_TRACK], [-130, -HALF_TRACK], [130, -HALF_TRACK]]) {
+    const wheel = new THREE.Group(); // turns about its axle (Z) as it rolls
+    wheel.position.set(x, WHEEL_RADIUS + 1, z);
+    excavator.add(wheel);
+    cylinder(wheel, WHEEL_RADIUS, 34, 12, TYRE, [0, 0, 0], alongZ);
+    cylinder(wheel, 24, 36, 10, HUB, [0, 0, 0], alongZ);
+    box(wheel, [30, 7, 3], DARK, [0, 0, Math.sign(z) * 19.5]); // a bar across the outer hub, to see it roll
+    wheels.push({ wheel, side: Math.sign(z) }); // +1: the left side (the front is -X), -1: the right
   }
   box(excavator, [250, 36, 120], DARK, [0, 68, 0]); // undercarriage
-  box(excavator, [310, 110, 150], paint, [0, 140, 0]); // body
-  box(excavator, [6, 82, 4], TYRE, [22, 126, 77]); // ladder on the front
-  box(excavator, [6, 82, 4], TYRE, [72, 126, 77]);
-  for (const y of [102, 126, 150]) box(excavator, [50, 5, 4], TYRE, [47, y, 77]);
-  box(excavator, [60, 24, 70], DARK, [-85, 205, 0]); // boom mount
-  box(excavator, [125, 50, 100], paint, [25, 219, 0]); // seat housing
-  box(excavator, [44, 8, 50], TYRE, [60, 248, 0]); // seat
-  box(excavator, [10, 56, 50], TYRE, [88, 276, 0]); // seat back
+  const house = new THREE.Group();
+  excavator.add(house);
+  box(house, [310, 110, 150], paint, [0, 140, 0]); // body
+  box(house, [6, 82, 4], TYRE, [22, 126, 77]); // ladder on the front
+  box(house, [6, 82, 4], TYRE, [72, 126, 77]);
+  for (const y of [102, 126, 150]) box(house, [50, 5, 4], TYRE, [47, y, 77]);
+  box(house, [60, 24, 70], DARK, [-85, 205, 0]); // boom mount
+  box(house, [125, 50, 100], paint, [25, 219, 0]); // seat housing
+  box(house, [44, 8, 50], TYRE, [60, 248, 0]); // seat
+  box(house, [10, 56, 50], TYRE, [88, 276, 0]); // seat back
   for (const z of [-16, 16]) {
-    beam(excavator, [8, 244, z], [12, 278], 5, 5, TYRE); // control lever
-    sphere(excavator, 6, 0xc8402f, [12, 282, z]);
+    beam(house, [8, 244, z], [12, 278], 5, 5, TYRE); // control lever
+    sphere(house, 6, 0xc8402f, [12, 282, z]);
   }
   const boomFoot = [-85, 210];
   const elbow = [-197, 345];
@@ -160,8 +181,8 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
   // foot), arm (at the elbow), bucket (at the hinge). digPose() drives the angles.
   const boomJoint = new THREE.Group();
   boomJoint.position.set(boomFoot[0], boomFoot[1], 0);
-  excavator.add(boomJoint);
-  cylinder(excavator, 13, 56, 8, DARK, [boomFoot[0], boomFoot[1], 0], alongZ); // foot pin
+  house.add(boomJoint);
+  cylinder(house, 13, 56, 8, DARK, [boomFoot[0], boomFoot[1], 0], alongZ); // foot pin
   beam(boomJoint, [0, 0], [elbow[0] - boomFoot[0], elbow[1] - boomFoot[1]], 34, 40, paint); // boom
   const armJoint = new THREE.Group();
   armJoint.position.set(elbow[0] - boomFoot[0], elbow[1] - boomFoot[1], 0);
@@ -184,10 +205,10 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
 
   // Operator on the seat, hands on the levers, looking at the bucket (-X).
   const shirt = 0x3567a8;
-  box(excavator, [26, 54, 34], shirt, [62, 279, 0]);
-  for (const z of [-9, 9]) beam(excavator, [64, 256, z], [32, 258], 12, 13, 0x2b3a55); // thighs
-  for (const z of [-16, 16]) beam(excavator, [60, 300, z], [14, 279], 9, 9, shirt); // arms
-  const operatorHead = head(excavator, [60, 322, 0], 15, -Math.PI / 2);
+  box(house, [26, 54, 34], shirt, [62, 279, 0]);
+  for (const z of [-9, 9]) beam(house, [64, 256, z], [32, 258], 12, 13, 0x2b3a55); // thighs
+  for (const z of [-16, 16]) beam(house, [60, 300, z], [14, 279], 9, 9, shirt); // arms
+  const operatorHead = head(house, [60, 322, 0], 15, -Math.PI / 2);
 
   // ---------- Worker ----------
   const worker = new THREE.Group();
@@ -210,6 +231,8 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
   const workerHead = head(worker, [0, 190, 0], 25, 0);
 
   // ---------- Rock pile ----------
+  const rockPile = new THREE.Group();
+  model.add(rockPile);
   // [x, z, width, height, depth, tilt about X, turn about Y, tilt about Z, colour]
   const rocks = [
     [-360, 40, 70, 44, 58, -8, 20, 0, 0x948b7e],
@@ -218,22 +241,49 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
     [-435, 90, 60, 42, 52, 10, 5, 0, 0x8a8174],
   ];
   for (const [x, z, w, h, d, rx, ry, rz, colour] of rocks) {
-    box(model, [w, h, d], colour, [x, h / 2 - 2, z], [deg(rx), deg(ry), deg(rz), 'YXZ']);
+    box(rockPile, [w, h, d], colour, [x, h / 2 - 2, z], [deg(rx), deg(ry), deg(rz), 'YXZ']);
   }
-  box(model, [40, 30, 36], 0x9c9386, [-395, 48, 62], [0, deg(30), deg(-12), 'YXZ']); // on top of the pile
+  box(rockPile, [40, 30, 36], 0x9c9386, [-395, 48, 62], [0, deg(30), deg(-12), 'YXZ']); // on top of the pile
 
-  // Soft contact shadows, [x, z, width, depth]: each is the ellipse inscribed in that box.
-  const shadows = [[190, -30, 380, 220], [-225, -30, 160, 130], [-380, 55, 220, 170], [-150, 240, 100, 80]];
+  // Soft contact shadows, [x, z, width, depth] in the model frame with the excavator at
+  // home: each is the ellipse inscribed in that box. The excavator's drives with it, the
+  // bucket's swings with the house.
+  const shadows = [
+    { name: 'excavator', at: [190, -30, 380, 220], parent: excavator },
+    { name: 'bucket', at: [-225, -30, 160, 130], parent: house },
+    { name: 'rocks', at: [-380, 55, 220, 170], parent: model },
+    { name: 'worker', at: [-150, 240, 100, 80], parent: model },
+  ];
+  const shadowOf = (name) => shadows.find((s) => s.name === name).at;
+  const ellipse = ([x, z, w, d], i, n) => [x + (w / 2) * Math.cos((i / n) * Math.PI * 2), z + (d / 2) * Math.sin((i / n) * Math.PI * 2)];
 
-  /** Poses the joints and heads for time `t` (seconds); returns digPose(t). */
-  const animate = (t) => {
-    const pose = digPose(t);
+  /**
+   * Poses the arm for dig time `dig` and the heads for clock time `t` (seconds; `dig`
+   * defaults to `t`). Returns digPose(dig).
+   */
+  const animate = (t, dig = t) => {
+    const pose = digPose(dig);
     boomJoint.rotation.z = pose.boom;
     armJoint.rotation.z = pose.arm;
     bucket.rotation.z = BUCKET_REST + pose.bucket;
     operatorHead.rotation.y = -Math.PI / 2 + 0.25 * pose.bucket; // follows the bucket a little
     workerHead.rotation.y = 0.6 * Math.sin((2 * Math.PI * t) / 9); // looks around now and then
     return pose;
+  };
+
+  /**
+   * Puts the excavator where a drive state says (src/excavatorDrive.js): { x, z, heading,
+   * swing, travel } in the model frame. The wheels roll with the distance driven, each
+   * side its own when it turns.
+   */
+  const setDrive = ({ x, z, heading, swing, travel }) => {
+    excavator.position.set(x, 0, z);
+    excavator.rotation.y = heading;
+    house.rotation.y = swing;
+    for (const { wheel, side } of wheels) {
+      // Turning anticlockwise (heading growing), the right side (-1) covers more ground.
+      wheel.rotation.z = (travel - side * HALF_TRACK * heading) / WHEEL_RADIUS;
+    }
   };
 
   // Measure the footprint, shadows included, so that nothing hangs past a table edge,
@@ -273,12 +323,13 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
     lowest = Math.min(before, lowest);
   }
   animate(0);
-  for (const [x, z, w, d] of shadows) {
+  model.updateMatrixWorld(true);
+  for (const { at } of shadows) {
     for (let i = 0; i < 48; i++) {
-      const a = (i / 48) * Math.PI * 2;
-      v.set(x + (w / 2) * Math.cos(a), 0, z + (d / 2) * Math.sin(a));
+      const [x, z] = ellipse(at, i, 48);
+      v.set(x, 0, z);
       bounds.expandByPoint(v);
-      footprint.push(v.x, v.z);
+      footprint.push(x, z);
     }
   }
   const cx = (bounds.min.x + bounds.max.x) / 2;
@@ -286,15 +337,42 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
   let radius = 0;
   for (let i = 0; i < footprint.length; i += 2) radius = Math.max(radius, Math.hypot(footprint[i] - cx, footprint[i + 1] - cz));
 
+  // For driving: the circle round the excavator's centre that holds its body whichever
+  // way it turns or swings (wheels, house and the chassis's shadow, not the arm, which may
+  // reach over the edge), and circles round the worker and the rock pile, which it must
+  // not drive into. All in the model frame, as the excavator's own position is.
+  const flatPoints = (root, skip, shadow) => {
+    const points = [];
+    root.traverse((o) => {
+      if (!o.isMesh || skip?.(o)) return;
+      const position = o.geometry.attributes.position;
+      for (let i = 0; i < position.count; i++) {
+        v.fromBufferAttribute(position, i).applyMatrix4(o.matrixWorld);
+        points.push([v.x, v.z]);
+      }
+    });
+    for (let i = 0; i < 48; i++) points.push(ellipse(shadow, i, 48));
+    return points;
+  };
+  const circleAround = (points, centre) => {
+    const xs = points.map((p) => p[0]);
+    const zs = points.map((p) => p[1]);
+    const c = centre ?? { x: (Math.min(...xs) + Math.max(...xs)) / 2, z: (Math.min(...zs) + Math.max(...zs)) / 2 };
+    return { x: c.x, z: c.z, r: Math.max(...points.map(([x, z]) => Math.hypot(x - c.x, z - c.z))) };
+  };
+  const bodyRadius = circleAround(flatPoints(excavator, inArm, shadowOf('excavator')), HOME).r;
+  const obstacles = [circleAround(flatPoints(worker, null, shadowOf('worker'))), circleAround(flatPoints(rockPile, null, shadowOf('rocks')))];
+
   const shadowMaterial = new THREE.MeshBasicMaterial({ map: shadowTexture, transparent: true, depthWrite: false, toneMapped: false });
   const shadowGeometry = new THREE.PlaneGeometry(1, 1);
-  for (const [x, z, w, d] of shadows) {
+  for (const { at, parent } of shadows) {
+    const [x, z, w, d] = at;
     const shadow = new THREE.Mesh(shadowGeometry, shadowMaterial);
     shadow.rotation.x = -Math.PI / 2;
-    shadow.position.set(x, 1, z);
+    shadow.position.copy(parent.worldToLocal(new THREE.Vector3(x, 1, z))); // the model's frame is the world here
     shadow.scale.set(w, d, 1);
     shadow.userData.shadow = true;
-    model.add(shadow);
+    parent.add(shadow);
   }
 
   model.position.set(-cx, 0, -cz);
@@ -309,7 +387,13 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
     lowest: lowest * SITE_UNIT,
     armLowest: armLowest * SITE_UNIT,
     excavator,
+    house,
     animate,
+    setDrive,
+    home: { x: HOME.x, z: HOME.z, heading: 0 },
+    bodyRadius,
+    obstacles,
+    origin: { x: cx, z: cz },
   };
 }
 

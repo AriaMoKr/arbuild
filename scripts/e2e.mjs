@@ -392,33 +392,43 @@ const scenarios = {
     return shots.join(', ');
   },
 
-  async 'meeting room: right stick spins the dig site, holding A repaints the excavator'(browser, base) {
+  async 'meeting room: right stick swings the cab, holding B repaints the excavator'(browser, base) {
     await openApp(browser, base, 'emulate=1&env=meeting_room');
     const start = await enterAR(browser);
     const right = 'window.__iwer.xrDevice.controllers.right';
     const hold = (ms) => `new Promise((r) => setTimeout(r, ${ms}))`;
+    const swingFor = (x, ms) =>
+      browser.evaluate(`(async () => { ${right}.updateAxes('thumbstick', ${x}, 0); await ${hold(ms)}; ${right}.updateAxes('thumbstick', 0, 0); await ${hold(500)}; })()`);
 
-    // Full right for 1 s: clockwise (negative), roughly 45 degrees at the slow max speed.
-    await browser.evaluate(`(async () => { ${right}.updateAxes('thumbstick', 1, 0); await ${hold(1000)}; ${right}.updateAxes('thumbstick', 0, 0); await ${hold(100)}; })()`);
+    // Full right for 1 s: the cab swings clockwise (negative), ~50 degrees after the ramp-up,
+    // and stops soon after the stick is let go. The chassis, and the site, stay as they are.
+    await swingFor(1, 1000);
     const afterRight = await snapshot(browser);
-    const turned = afterRight.site.spin - start.site.spin;
-    if (!(turned < -0.4 && turned > -1.6)) throw new Error(`stick right turned ${turned.toFixed(3)} rad`);
-    if (afterRight.site.color !== start.site.color) throw new Error('colour changed without A');
+    const swung = afterRight.excavator.swing - start.excavator.swing;
+    if (!(swung < -0.5 && swung > -1.3)) throw new Error(`stick right swung the cab by ${swung.toFixed(3)} rad`);
+    assertNear(afterRight.excavator.position, start.excavator.position, 'the chassis while swinging');
+    if (afterRight.excavator.heading !== start.excavator.heading) throw new Error('swinging turned the chassis');
+    if (afterRight.site.spin !== start.site.spin) throw new Error('the right stick spun the whole site');
+    if (afterRight.site.color !== start.site.color) throw new Error('colour changed without B');
     await sleep(400);
-    if ((await snapshot(browser)).site.spin !== afterRight.site.spin) throw new Error('site kept spinning after the stick was released');
+    if ((await snapshot(browser)).excavator.swing !== afterRight.excavator.swing) throw new Error('the cab kept swinging after the stick was released');
 
-    // Full left for 0.5 s spins back the other way.
-    await browser.evaluate(`(async () => { ${right}.updateAxes('thumbstick', -1, 0); await ${hold(500)}; ${right}.updateAxes('thumbstick', 0, 0); await ${hold(100)}; })()`);
+    // Full left for 0.6 s swings it back the other way.
+    await swingFor(-1, 600);
     const afterLeft = await snapshot(browser);
-    if (!(afterLeft.site.spin > afterRight.site.spin + 0.2)) throw new Error(`stick left: spin ${afterRight.site.spin} -> ${afterLeft.site.spin}`);
+    if (!(afterLeft.excavator.swing > afterRight.excavator.swing + 0.2)) throw new Error(`stick left: swing ${afterRight.excavator.swing} -> ${afterLeft.excavator.swing}`);
 
-    // Holding A cycles the colour; releasing keeps the colour it reached.
-    await browser.evaluate(`(async () => { ${right}.updateButtonValue('a-button', 1); await ${hold(1000)}; ${right}.updateButtonValue('a-button', 0); await ${hold(100)}; })()`);
+    // A digs now and leaves the paint alone; holding B cycles the colour, and letting go keeps it.
+    await browser.evaluate(`(async () => { ${right}.updateButtonValue('a-button', 1); await ${hold(600)}; ${right}.updateButtonValue('a-button', 0); await ${hold(100)}; })()`);
     const afterA = await snapshot(browser);
-    if (afterA.site.color === start.site.color) throw new Error(`colour unchanged after holding A (${afterA.site.color})`);
-    if (afterA.site.spin !== afterLeft.site.spin) throw new Error('A button spun the site');
+    if (afterA.site.color !== start.site.color) throw new Error('holding A still repaints the excavator');
+    if (!(afterA.excavator.digTime > 0.3)) throw new Error(`holding A didn't dig (dig time ${afterA.excavator.digTime})`);
+    await browser.evaluate(`(async () => { ${right}.updateButtonValue('b-button', 1); await ${hold(1000)}; ${right}.updateButtonValue('b-button', 0); await ${hold(100)}; })()`);
+    const afterB = await snapshot(browser);
+    if (afterB.site.color === start.site.color) throw new Error(`colour unchanged after holding B (${afterB.site.color})`);
+    if (afterB.excavator.digTime !== afterA.excavator.digTime) throw new Error('B moved the arm');
     await sleep(400);
-    if ((await snapshot(browser)).site.color !== afterA.site.color) throw new Error('colour kept changing after A was released');
+    if ((await snapshot(browser)).site.color !== afterB.site.color) throw new Error('colour kept changing after B was released');
 
     await browser.evaluate(`(() => {
       const d = window.__iwer.xrDevice;
@@ -427,14 +437,14 @@ const scenarios = {
       d.quaternion.set(Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2));
     })()`);
     await sleep(800);
-    const shot = await browser.screenshot('meeting_room-spun-and-recoloured');
+    const shot = await browser.screenshot('meeting_room-swung-and-recoloured');
     await browser.evaluate('window.__app.endAR()');
     await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
     assertNoProblems(browser);
-    return `spin ${start.site.spin.toFixed(2)} → ${afterRight.site.spin.toFixed(2)} → ${afterLeft.site.spin.toFixed(2)} rad, colour ${start.site.color} → ${afterA.site.color}; ${shot}`;
+    return `swing 0 → ${afterRight.excavator.swing.toFixed(2)} → ${afterLeft.excavator.swing.toFixed(2)} rad, colour ${start.site.color} → ${afterB.site.color}; ${shot}`;
   },
 
-  async 'meeting room: left stick slides the dig site across the table and stops at its edge'(browser, base) {
+  async 'meeting room: left stick drives the excavator along its heading; it stops at the rocks and the table edge'(browser, base) {
     await openApp(browser, base, 'emulate=1&env=meeting_room');
     const start = await enterAR(browser);
     const left = 'window.__iwer.xrDevice.controllers.left';
@@ -443,63 +453,73 @@ const scenarios = {
         ${left}.updateAxes('thumbstick', ${x}, ${y});
         await new Promise((r) => setTimeout(r, ${ms}));
         ${left}.updateAxes('thumbstick', 0, 0);
-        await new Promise((r) => setTimeout(r, 100));
+        await new Promise((r) => setTimeout(r, 500)); // it brakes to a stop
       })()`);
-    const delta = (a, b) => b.site.position.map((v, i) => v - a.site.position[i]);
+    // Where `b` is from `a`, along `a`'s forward direction and across it (metres).
+    const moved = (a, b) => {
+      const [dx, dz] = [b.position[0] - a.position[0], b.position[2] - a.position[2]];
+      const [fx, fz] = a.forward;
+      return { along: dx * fx + dz * fz, across: -dx * fz + dz * fx, up: b.position[1] - a.position[1] };
+    };
+    const e0 = start.excavator;
+    if (!e0.atHome || e0.steering !== 'relative') throw new Error(`at the start: ${JSON.stringify(e0)}`);
 
-    // The emulated user faces -Z, so forward (stick y = -1) moves the site towards -Z at 0.25 m/s.
-    await push(0, -1, 1000);
-    const afterForward = await snapshot(browser);
-    const [fx, fy, fz] = delta(start, afterForward);
-    if (!(fz < -0.15 && fz > -0.4) || Math.abs(fx) > 0.02 || Math.abs(fy) > 1e-6) {
-      throw new Error(`forward push moved the site by [${fx.toFixed(3)}, ${fy.toFixed(3)}, ${fz.toFixed(3)}]`);
+    // Forward (stick y = -1) for 0.7 s: it drives ahead, towards the rocks, ramping up and
+    // braking to a stop, along its own heading and never sideways. The rest of the site stays.
+    await push(0, -1, 700);
+    const ahead = await snapshot(browser);
+    const f = moved(e0, ahead.excavator);
+    if (!(f.along > 0.04 && f.along < 0.13) || Math.abs(f.across) > 0.002 || Math.abs(f.up) > 1e-6) {
+      throw new Error(`a forward push moved it ${f.along.toFixed(3)} m ahead, ${f.across.toFixed(3)} m across, ${f.up} up`);
     }
-
-    // Right moves it towards +X.
-    await push(1, 0, 600);
-    const afterRight = await snapshot(browser);
-    const [rx, , rz] = delta(afterForward, afterRight);
-    if (!(rx > 0.08 && rx < 0.3) || Math.abs(rz) > 0.02) throw new Error(`right push moved the site by [${rx.toFixed(3)}, ${rz.toFixed(3)}]`);
+    if (ahead.excavator.heading !== e0.heading) throw new Error('driving straight turned it');
+    assertNear(ahead.site.position, start.site.position, 'the rest of the site');
     await sleep(300);
-    if (delta(afterRight, await snapshot(browser)).some((v) => Math.abs(v) > 1e-6)) throw new Error('site drifted after the stick was released');
+    if (moved(ahead.excavator, (await snapshot(browser)).excavator).along !== 0) throw new Error('it kept rolling after it stopped');
 
-    // Holding left long enough to cross the whole table stops at the table's edge.
-    await push(-1, 0, 5000);
+    // Right for 0.8 s turns it clockwise on the spot; left for 0.8 s turns it back.
+    await push(1, 0, 800);
+    const turned = await snapshot(browser);
+    const turn = turned.excavator.heading - ahead.excavator.heading;
+    if (!(turn < -0.4 && turn > -1.2)) throw new Error(`stick right turned it ${turn.toFixed(3)} rad`);
+    const shift = Math.hypot(turned.excavator.position[0] - ahead.excavator.position[0], turned.excavator.position[2] - ahead.excavator.position[2]);
+    if (shift > 1e-6) throw new Error(`turning on the spot moved it ${shift} m`);
+    await push(-1, 0, 800);
+    const straight = await snapshot(browser);
+    if (Math.abs(straight.excavator.heading - ahead.excavator.heading) > 0.05) throw new Error(`turning back left it at ${straight.excavator.heading.toFixed(3)} rad`);
+
+    // Forward for 3 s: it drives up to the rock pile and stops there, touching it.
+    await push(0, -1, 3000);
+    const atRocks = await snapshot(browser);
+    if (Math.abs(atRocks.excavator.clearance) > 0.002) throw new Error(`stopped ${atRocks.excavator.clearance.toFixed(3)} m from the rocks`);
+    const r = moved(straight.excavator, atRocks.excavator);
+    if (!(r.along > 0.01) || Math.abs(r.across) > 1e-6) throw new Error(`towards the rocks: ${r.along.toFixed(3)} m ahead, ${r.across} m across`);
+
+    // Backwards for 9 s: it reverses to the table's edge and stops with its body on the table.
+    await push(0, 1, 9000);
     const atEdge = await snapshot(browser);
-    const { offset, limits } = atEdge.site;
-    if (Math.abs(offset.x) > limits.x + 1e-9 || Math.abs(offset.z) > limits.z + 1e-9) {
-      throw new Error(`site left the table: offset ${JSON.stringify(offset)}, limits ${JSON.stringify(limits)}`);
+    const { onTable, limits, radius } = atEdge.excavator;
+    if (Math.abs(onTable.x) > limits.x + 1e-6 || Math.abs(onTable.z) > limits.z + 1e-6) {
+      throw new Error(`it left the table: at ${JSON.stringify(onTable)}, limits ${JSON.stringify(limits)}`);
     }
-    const reach = Math.max(Math.abs(offset.x) / limits.x, Math.abs(offset.z) / limits.z);
-    if (Math.abs(reach - 1) > 1e-6) throw new Error(`expected the site to stop at the edge, got ${reach.toFixed(3)} of the way`);
-    if (Math.abs(atEdge.site.position[1] - start.site.position[1]) > 1e-6) throw new Error('site height changed while sliding');
-
-    // Check the edge against the scanned table, not just the app's own limits: the site's
-    // footprint circle (shadows included) touches the edge, and every solid part is on the table.
-    const tableLeft = MEETING_ROOM_TABLE[0] - MEETING_ROOM_TABLE_WIDTH / 2;
-    if (Math.abs(atEdge.site.position[0] - (tableLeft + atEdge.site.radius)) > TOLERANCE) {
-      throw new Error(`site stopped at x=${atEdge.site.position[0].toFixed(3)}, expected ${(tableLeft + atEdge.site.radius).toFixed(3)} (table edge + footprint radius)`);
-    }
-    assertOnMeetingTable(atEdge.site, 'at the edge');
-
-    // The footprint circle doesn't change with spin, so spinning at the edge keeps every part on the table.
-    await browser.evaluate(`(async () => {
-      const right = window.__iwer.xrDevice.controllers.right;
-      right.updateAxes('thumbstick', 1, 0);
-      await new Promise((r) => setTimeout(r, 1000));
-      right.updateAxes('thumbstick', 0, 0);
-      await new Promise((r) => setTimeout(r, 100));
-    })()`);
-    await push(-1, 0, 500);
-    const spunAtEdge = await snapshot(browser);
-    const spun = spunAtEdge.site.spin - atEdge.site.spin;
-    if (Math.abs(spun) < 0.4) throw new Error(`right stick barely spun the site (${spun.toFixed(3)} rad)`);
-    assertNear(spunAtEdge.site.position, atEdge.site.position, 'spun at the edge');
-    assertOnMeetingTable(spunAtEdge.site, 'spun at the edge');
+    const reach = Math.max(Math.abs(onTable.x) / limits.x, Math.abs(onTable.z) / limits.z);
+    if (Math.abs(reach - 1) > 0.005) throw new Error(`expected it to stop at the edge, got ${reach.toFixed(3)} of the way`);
+    if (moved(atRocks.excavator, atEdge.excavator).along > -0.2) throw new Error('it didn\'t reverse');
+    // Check against the scanned table, not just the app's own numbers: its body circle touches an edge.
+    const [ex, , ez] = atEdge.excavator.position;
+    const [tx, , tz] = MEETING_ROOM_TABLE;
+    const gap = Math.min(
+      ex - (tx - MEETING_ROOM_TABLE_WIDTH / 2),
+      tx + MEETING_ROOM_TABLE_WIDTH / 2 - ex,
+      ez - (tz - MEETING_ROOM_TABLE_DEPTH / 2),
+      tz + MEETING_ROOM_TABLE_DEPTH / 2 - ez,
+    );
+    if (Math.abs(gap - radius) > TOLERANCE) throw new Error(`its centre stopped ${gap.toFixed(3)} m from the table edge, expected its body radius ${radius.toFixed(3)} m`);
+    assertOnMeetingTable(atEdge.site, 'at the edge'); // the arm points back over the table
 
     // Scene data can drop out for a moment (seen on the Quest). Hide the table, plane and
-    // mesh, for 400 ms: the site must stay where the user put it, slid and spun, and come
-    // back without a new pick.
+    // mesh, for 400 ms: the excavator must stay where the user drove it, and come back
+    // without a new pick.
     await sleep(2500); // let any pending debug-log batch arrive before counting
     const PICK = /^\[tables\] (first|tables changed|table lost|user): /;
     const picksBefore = countDebugLog(PICK);
@@ -514,7 +534,7 @@ const scenarios = {
     await sleep(400);
     const during = await snapshot(browser);
     if (!during.site.visible) throw new Error('the site disappeared during a brief dropout');
-    assertNear(during.site.position, spunAtEdge.site.position, 'during the dropout');
+    assertNear(during.excavator.position, atEdge.excavator.position, 'during the dropout');
     await browser.evaluate(`(() => {
       const sem = window.__iwer.xrDevice.sem;
       for (const e of window.__dropped.planes) sem.trackedPlanes.add(e);
@@ -523,34 +543,52 @@ const scenarios = {
     await browser.waitFor('window.__app.snapshot().tableCount === 1', { label: 'table back' });
     await sleep(2500); // a debug-log flush happens every 2 s
     const afterDropout = await snapshot(browser);
-    assertNear(afterDropout.site.position, spunAtEdge.site.position, 'after the dropout');
-    if (Math.abs(afterDropout.site.spin - spunAtEdge.site.spin) > 1e-6) throw new Error('the dropout reset the spin');
-    if (afterDropout.site.offset.x !== spunAtEdge.site.offset.x || afterDropout.site.offset.z !== spunAtEdge.site.offset.z) {
-      throw new Error(`the dropout reset the slide: ${JSON.stringify(spunAtEdge.site.offset)} -> ${JSON.stringify(afterDropout.site.offset)}`);
-    }
+    assertNear(afterDropout.excavator.position, atEdge.excavator.position, 'after the dropout');
+    if (afterDropout.excavator.heading !== atEdge.excavator.heading) throw new Error('the dropout turned the excavator');
+    if (afterDropout.site.spin !== atEdge.site.spin) throw new Error('the dropout turned the site');
     const picksAfter = countDebugLog(PICK);
     if (picksAfter !== picksBefore) throw new Error(`the dropout caused ${picksAfter - picksBefore} new table pick(s)`);
     // IWER hands the plane back as a new object, which the debug log should say.
-    const recovered = await waitForDebugLog(/^\[tables\] table back after \d+ ms as a new object in the same place; the site stayed put$/);
+    await waitForDebugLog(/^\[tables\] table back after \d+ ms as a new object in the same place; the site stayed put$/);
 
-    const [cx, , cz] = atEdge.site.position;
+    // Absolute steering, from the menu: the stick says where to go, as the user sees it.
+    await browser.evaluate(`(() => { const d = window.__iwer.xrDevice; d.position.set(0, 1.6, 0); d.quaternion.set(0, 0, 0, 1); })()`);
+    await sleep(300); // let the menu turn to face the new head position before aiming at it
+    await aimAtMenuButton(browser, 'steering');
+    await clickTrigger(browser);
+    await browser.waitFor(`window.__app.snapshot().excavator.steering === 'absolute'`, { timeout: 3000, label: 'absolute steering' });
+    if ((await snapshot(browser)).menu.labels.steering !== 'Steering: absolute') throw new Error('the menu label didn\'t change');
+    await waitForDebugLog(/^\[drive\] steering: absolute$/);
+    // The user faces -Z, so pulling the stick back means "towards me" (+Z). The excavator
+    // faces -X: it turns a quarter to the left first, then drives towards the user.
+    await push(0, 1, 5000);
+    const towardsUser = await snapshot(browser);
+    const [fx, fz] = towardsUser.excavator.forward;
+    if (fz < 0.98) throw new Error(`absolute steering left it facing [${fx.toFixed(2)}, ${fz.toFixed(2)}], expected +Z`);
+    const drove = towardsUser.excavator.position[2] - atEdge.excavator.position[2];
+    if (!(drove > 0.15)) throw new Error(`absolute steering drove it ${drove.toFixed(3)} m towards the user`);
+    // Back to relative, which the other scenarios expect (it's remembered in localStorage).
+    await clickTrigger(browser);
+    await browser.waitFor(`window.__app.snapshot().excavator.steering === 'relative'`, { timeout: 3000, label: 'relative steering again' });
+
+    const [cx, , cz] = towardsUser.excavator.position;
     await browser.evaluate(`(() => {
       const d = window.__iwer.xrDevice;
-      d.position.set(${cx + 0.45}, 1.35, ${cz + 0.65});
-      const pitch = -38 * Math.PI / 180, yaw = 35 * Math.PI / 180;
-      // yaw about Y, then pitch about X (YXZ), so the view looks down at the site.
+      d.position.set(${cx - 0.45}, 1.3, ${cz + 0.55});
+      const pitch = -40 * Math.PI / 180, yaw = -40 * Math.PI / 180;
+      // yaw about Y, then pitch about X (YXZ), so the view looks down at the excavator.
       const cy = Math.cos(yaw / 2), sy = Math.sin(yaw / 2), cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
       d.quaternion.set(cy * sp, sy * cp, -sy * sp, cy * cp);
     })()`);
     await sleep(800);
-    const shot = await browser.screenshot('meeting_room-slid-to-edge');
+    const shot = await browser.screenshot('meeting_room-driven');
     await browser.evaluate('window.__app.endAR()');
     await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
     assertNoProblems(browser);
-    return `forward Δz=${fz.toFixed(3)}, right Δx=${rx.toFixed(3)}, stopped at offset (${offset.x.toFixed(3)}, ${offset.z.toFixed(3)}); ${shot}`;
+    return `ahead ${f.along.toFixed(3)} m, turned ${turn.toFixed(2)} rad, stopped at the rocks and ${gap.toFixed(3)} m from the edge; absolute drove ${drove.toFixed(2)} m; ${shot}`;
   },
 
-  async 'meeting room: the excavator digs on a loop, with sound, and the menu mutes it'(browser, base) {
+  async 'meeting room: holding A digs and letting go stops the arm; sound, and the menu mutes it'(browser, base) {
     await openApp(browser, base, 'emulate=1&env=meeting_room');
     await enterAR(browser);
     // Look down at the dig site from close by, so the screenshots show the arm.
@@ -560,14 +598,21 @@ const scenarios = {
       const pitch = -40 * Math.PI / 180;
       d.quaternion.set(Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2));
     })()`);
+    const right = 'window.__iwer.xrDevice.controllers.right';
 
-    // A whole cycle (6 s): every phase shows up, and nothing solid goes below the table top.
+    // The arm rests until A is held.
+    await sleep(500);
+    let s = await snapshot(browser);
+    if (s.excavator.digTime !== 0 || s.excavator.digging) throw new Error(`the arm moved without A: ${JSON.stringify(s.excavator)}`);
+
+    // Held for a whole cycle (6 s): every phase shows up, and nothing solid goes below the table top.
     const tableTop = MEETING_ROOM_TABLE[1];
     const seen = [];
     const shots = [];
+    await browser.evaluate(`${right}.updateButtonValue('a-button', 1)`);
     const end = Date.now() + 6500;
     while (Date.now() < end) {
-      const s = await snapshot(browser);
+      s = await snapshot(browser);
       const phase = s.site.digPhase;
       if (phase && seen[seen.length - 1] !== phase) {
         seen.push(phase);
@@ -580,9 +625,21 @@ const scenarios = {
       if (!seen.includes(phase)) throw new Error(`dig phase ${phase} never showed up (saw ${seen.join(' → ')})`);
     }
 
+    // Let go part-way into the next cycle: the arm stops where it is.
+    await sleep(1200);
+    await browser.evaluate(`${right}.updateButtonValue('a-button', 0)`);
+    await sleep(200);
+    const released = await snapshot(browser);
+    await sleep(600);
+    const later = await snapshot(browser);
+    if (later.excavator.digTime !== released.excavator.digTime || later.site.digPhase !== released.site.digPhase) {
+      throw new Error(`the arm kept moving after A was released: ${released.excavator.digTime} -> ${later.excavator.digTime}`);
+    }
+    if (!(released.excavator.digTime > 6.5)) throw new Error(`dig time ${released.excavator.digTime} after ~7.7 s of holding A`);
+
     // The audio runs (headless Chrome is started with autoplay allowed) but is off by default;
     // the menu's Sound button turns it on and off again.
-    let s = await snapshot(browser);
+    s = await snapshot(browser);
     if (s.sound.state !== 'running') throw new Error(`audio state ${s.sound.state}`);
     if (!s.sound.muted || s.menu.labels.sound !== 'Sound off') throw new Error(`sound should start off: ${JSON.stringify(s.sound)}, label ${s.menu.labels.sound}`);
     await browser.evaluate(`(() => { const d = window.__iwer.xrDevice; d.position.set(0, 1.6, 0); d.quaternion.set(0, 0, 0, 1); })()`);
@@ -736,29 +793,30 @@ const scenarios = {
     const shot = await browser.screenshot('living_room-nearest-table');
 
     const visited = [s.site.position];
-    // Nudge the site off-centre with the left stick: the next table must still get it at its centre.
-    // Keep it short: the site nearly fills this table's depth, so a long push would reach an edge of its narrow side.
+    // Drive the excavator off home with the left stick: the next table must still get it back home.
+    // This table is turned about 90 degrees, so a yaw-sign or frame mix-up shows here: the
+    // excavator must move along the forward direction it reports, in the room.
     await browser.evaluate(`(async () => {
       const left = window.__iwer.xrDevice.controllers.left;
-      left.updateAxes('thumbstick', 1, -1);
-      await new Promise((r) => setTimeout(r, 300));
+      left.updateAxes('thumbstick', 0, -1);
+      await new Promise((r) => setTimeout(r, 500));
       left.updateAxes('thumbstick', 0, 0);
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 500));
     })()`);
-    const nudgedSnap = await snapshot(browser);
-    const nudged = nudgedSnap.site.offset;
-    if (Math.hypot(nudged.x, nudged.z) < 0.04) throw new Error(`left stick didn't move the site: ${JSON.stringify(nudged)}`);
-    // This table is turned about 90 degrees, so a yaw-sign or table-frame mix-up shows here.
-    // The user faces -Z: forward-right on the stick must move the site equally towards +X and -Z in the room.
-    const [ndx, , ndz] = nudgedSnap.site.position.map((v, i) => v - s.site.position[i]);
-    if (!(ndx > 0.03 && ndz < -0.03 && Math.abs(ndx + ndz) < 0.01)) {
-      throw new Error(`stick forward-right moved the site by [${ndx.toFixed(3)}, ${ndz.toFixed(3)}] in the room; expected equal +x and -z`);
+    const driven = (await snapshot(browser)).excavator;
+    const [ddx, , ddz] = driven.position.map((v, i) => v - s.excavator.position[i]);
+    const [fx, fz] = s.excavator.forward;
+    const along = ddx * fx + ddz * fz;
+    const across = -ddx * fz + ddz * fx;
+    if (!(along > 0.02) || Math.abs(across) > 0.002) {
+      throw new Error(`stick forward moved the excavator ${along.toFixed(3)} m along and ${across.toFixed(3)} m across its forward [${fx.toFixed(2)}, ${fz.toFixed(2)}]`);
     }
-    if (Math.abs(Math.hypot(ndx, ndz) - Math.hypot(nudged.x, nudged.z)) > 1e-4) throw new Error('room displacement does not match the table-frame offset');
+    if (driven.atHome) throw new Error('the excavator still counts as at home after driving');
     for (let i = 1; i <= 4; i++) {
       s = await pressTrigger(browser);
       if (s.tableIndex !== i % 4) throw new Error(`press ${i}: expected index ${i % 4}, got ${s.tableIndex}`);
       if (s.panel?.startsWith(`Table ${(i % 4) + 1} of 4`) !== true) throw new Error(`press ${i}: hint panel ${s.panel}`);
+      if (!s.excavator.atHome) throw new Error(`press ${i}: the excavator wasn't back home on the new table`);
       visited.push(s.site.position);
     }
     // Every table visited exactly once, then back to the first.

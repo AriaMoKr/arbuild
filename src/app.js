@@ -2,19 +2,11 @@ import * as THREE from 'three';
 import { StatusPanel } from './statusPanel.js';
 import { XrMenu } from './xrMenu.js';
 import { FrameTrace } from './frameTrace.js';
-import { createDigSite } from './digSite.js';
+import { SITE_UNIT, createDigSite } from './digSite.js';
 import { SoftOcclusion } from './occlusion.js';
 import { SiteSound } from './siteSound.js';
-import {
-  clampOffset,
-  nextHue,
-  readLeftStick,
-  readRightController,
-  slideOnTable,
-  spinVelocity,
-  tableOffsetToWorld,
-  viewerHeading,
-} from './controllerInput.js';
+import { nextHue, readLeftStick, readRightController, viewerHeading } from './controllerInput.js';
+import { STEERING_MODES, driveLoad, forwardOf, intoFrame, outOfFrame, parkedAt, stepDrive } from './excavatorDrive.js';
 import {
   TableTracker,
   bearingTo,
@@ -30,6 +22,7 @@ const SURFACE_GAP = 0.001; // avoid z-fighting with the real table surface
 const SCAN_GRACE_MS = 3000; // Meta: scene data can take 2-3 s to arrive after the session starts
 const PLACED_HINT_MS = 4000; // how long the 'placed' hint stays up once the site has been seen
 const SEEN_ANGLE = (40 * Math.PI) / 180; // site within this angle of the gaze counts as seen
+const STEERING_KEY = 'tableCube.steering'; // localStorage: 'relative' (default) or 'absolute'
 
 // Scene features stay optional: if the user denies spatial data, the session still starts
 // and we can explain what's wrong instead of failing to enter AR at all.
@@ -84,7 +77,19 @@ export function initApp() {
   // the dig site spins on top of it.
   const anchor = new THREE.Group();
   anchor.visible = false;
-  const { site, paint, radius: siteRadius, height: siteHeight, excavator, animate: animateSite } = createDigSite();
+  const {
+    site,
+    paint,
+    radius: siteRadius,
+    height: siteHeight,
+    excavator,
+    animate: animateSite,
+    setDrive,
+    home: excavatorHome,
+    bodyRadius,
+    obstacles,
+    origin: siteOrigin,
+  } = createDigSite();
   // Real things in front of the dig site hide it, softly (src/occlusion.js).
   const occlusion = new SoftOcclusion(renderer);
   if (import.meta.env.DEV && new URLSearchParams(location.search).get('occlusion') === 'debug') occlusion.debug = true;
@@ -93,9 +98,10 @@ export function initApp() {
   });
   anchor.add(site);
   scene.add(anchor);
-  // Driven by the right controller: thumbstick spins the site, holding A cycles the excavator's paint.
+  // Holding B on the right controller cycles the excavator's paint.
   const paintHsl = paint.color.getHSL({ h: 0, s: 0, l: 0 }, THREE.SRGBColorSpace);
-  let spinDirection = -1;
+  // How the left stick steers (src/excavatorDrive.js), switched on the menu and remembered.
+  let steering = loadSteering();
 
   const panel = new StatusPanel();
   scene.add(panel.mesh);
@@ -111,9 +117,17 @@ export function initApp() {
       sound.toggleMuted();
       showSoundLabel();
     },
+    onSteering: () => {
+      steering = STEERING_MODES[(STEERING_MODES.indexOf(steering) + 1) % STEERING_MODES.length];
+      saveSteering(steering);
+      showSteeringLabel();
+      console.info(`[drive] steering: ${steering}`);
+    },
   });
   const showSoundLabel = () => menu.setLabel('sound', sound.muted ? 'Sound off' : 'Sound on');
+  const showSteeringLabel = () => menu.setLabel('steering', `Steering: ${steering}`);
   showSoundLabel();
+  showSteeringLabel();
   scene.add(menu.root);
 
   const tracker = new TableTracker();
@@ -127,7 +141,9 @@ export function initApp() {
     lockId: null, // tracker.lockId of the table the site is on; a change means a new table
     lockedAt: 0,
     seenAt: null, // when the site was first in view since the last table change
-    offset: { x: 0, z: 0 }, // site position relative to the table centre, in the table's frame (left stick)
+    drive: parkedAt(excavatorHome), // where the excavator is and how it's moving (src/excavatorDrive.js)
+    digTime: 0, // seconds into the dig cycle: it only runs while A is held
+    digging: false,
     roomCaptureUsed: false,
     state: 'idle',
     sceneObjectCount: 0,
@@ -207,7 +223,9 @@ export function initApp() {
       lockId: null,
       lockedAt: 0,
       seenAt: null,
-      offset: { x: 0, z: 0 },
+      drive: parkedAt(excavatorHome),
+      digTime: 0,
+      digging: false,
       roomCaptureUsed: false,
       state: 'scanning',
       sceneObjectCount: 0,
@@ -318,21 +336,27 @@ export function initApp() {
       const how = recovery.newObject ? ' as a new object in the same place' : '';
       console.info(`[tables] table back after ${Math.round(recovery.missingMs)} ms${how}; the site stayed put`);
     }
-    applyControllerInput(readRightController(xrSession.inputSources), dt);
+    const right = readRightController(xrSession.inputSources);
+    repaint(right, dt);
 
     if (table) {
       if (tracker.lockId !== run.lockId) {
         run.lockId = tracker.lockId;
         run.lockedAt = time;
         run.seenAt = null;
-        // A new table starts with the site at its centre, square to the table and facing the user.
-        run.offset = { x: 0, z: 0 };
+        // A new table starts with the site at its centre, square to the table and facing
+        // the user, and the excavator parked at home with its arm at rest.
         site.rotation.y = quarterTurnToward(run.viewer, table.top.center, table.top.yaw);
+        run.drive = parkedAt(excavatorHome);
+        run.digTime = 0;
         logTablePick(table, candidates);
       }
-      moveSite(readLeftStick(xrSession.inputSources), table.top, dt);
+      driveExcavator(readLeftStick(xrSession.inputSources), right, table.top, dt);
+      run.digging = Boolean(right?.aPressed);
+      if (run.digging) run.digTime += dt; // holding A digs; letting go stops the arm where it is
       placeSite(table.top);
-      run.digPose = animateSite(time / 1000); // the dig cycle runs on the frame clock
+      run.digPose = animateSite(time / 1000, run.digTime);
+      if (run.digging) tracker.confirm(); // the user is working with this table: keep it
       if (run.seenAt === null && run.viewer && viewAngleTo(siteCentre(table.top), run.viewer) <= SEEN_ANGLE) {
         run.seenAt = time;
       }
@@ -350,7 +374,13 @@ export function initApp() {
     });
     panel.show(messageFor(run.state, xrSession, time, table));
     panel.follow(viewerPose, dt);
-    sound.update(run.digPose, anchor.visible);
+    sound.update(run.digPose && { ...run.digPose, hydraulics: workLoad() }, anchor.visible);
+  }
+
+  // How hard the excavator is working, 0..1, for the engine and hydraulics sound: the arm
+  // while it digs, the wheels and the swing while they move.
+  function workLoad() {
+    return Math.max(run.digging ? run.digPose.hydraulics : 0, driveLoad(run.drive));
   }
 
   function recordFrame(time) {
@@ -393,24 +423,45 @@ export function initApp() {
     return { candidates: planes.length > 0 ? planes : meshes, sceneObjectCount };
   }
 
-  function applyControllerInput(controller, dt) {
-    if (!controller) return;
-    const spin = spinVelocity(controller.stick, spinDirection);
-    spinDirection = spin.direction;
-    site.rotation.y += spin.velocity * dt; // about the site's own vertical axis, on top of the table's yaw
-    if (spin.velocity !== 0) tracker.confirm(); // the user is working with this table: keep it
-    if (controller.aPressed) {
-      paintHsl.h = nextHue(paintHsl.h, dt); // the colour stays where it is when A is released
-      paint.color.setHSL(paintHsl.h, paintHsl.s, paintHsl.l, THREE.SRGBColorSpace);
-    }
+  // Holding B cycles the excavator's paint; the colour stays where it is when B is released.
+  function repaint(controller, dt) {
+    if (!controller?.bPressed) return;
+    paintHsl.h = nextHue(paintHsl.h, dt);
+    paint.color.setHSL(paintHsl.h, paintHsl.s, paintHsl.l, THREE.SRGBColorSpace);
   }
 
-  function moveSite(stick, top, dt) {
-    if (!stick) return;
-    const heading = run.viewer && viewerHeading(run.viewer.forward, run.viewer.up);
-    const before = run.offset;
-    run.offset = slideOnTable(run.offset, stick, heading, top.yaw, slideLimits(top), dt);
-    if (run.offset.x !== before.x || run.offset.z !== before.z) tracker.confirm(); // keep this table
+  // The left stick drives the excavator round the table, the right stick swings its cab
+  // (src/excavatorDrive.js). All of it happens in the site's own frame, in design units.
+  function driveExcavator(leftStick, right, top, dt) {
+    const worldHeading = run.viewer && viewerHeading(run.viewer.forward, run.viewer.up);
+    const before = run.drive;
+    run.drive = stepDrive(
+      before,
+      {
+        stick: leftStick,
+        swingStick: right?.stick ?? null,
+        mode: steering,
+        viewHeading: worldHeading && intoFrame(worldHeading, top.yaw + site.rotation.y),
+      },
+      { area: driveArea(top), radius: bodyRadius, obstacles },
+      dt,
+    );
+    setDrive(run.drive);
+    const d = run.drive;
+    if (d.x !== before.x || d.z !== before.z || d.heading !== before.heading || d.swing !== before.swing) tracker.confirm(); // keep this table
+  }
+
+  // The table top in the site's frame, for driving: centred on the site's origin, turned
+  // by the site's quarter turn, in design units at the site's scale on this table.
+  function driveArea(top) {
+    const unitsPerMetre = 1 / (SITE_UNIT * siteScale(top));
+    return {
+      cx: siteOrigin.x,
+      cz: siteOrigin.z,
+      angle: site.rotation.y,
+      halfX: (top.width / 2) * unitsPerMetre,
+      halfZ: (top.depth / 2) * unitsPerMetre,
+    };
   }
 
   // For the debug log: which table was picked and why ('first', 'tables changed', 'table lost', 'user').
@@ -420,23 +471,9 @@ export function initApp() {
     console.info(`[tables] ${tracker.reason}: table ${index} of ${candidates.length}${away == null ? '' : `, ${away.toFixed(1)} m away`}`);
   }
 
-  // How far the site may move from the table centre and still stand fully on the table
-  // top, shadows included. Its footprint fits in a circle, so spinning it at an edge
-  // never pushes it over.
-  function slideLimits(top) {
-    const r = siteRadius * siteScale(top);
-    return { x: Math.max(0, top.width / 2 - r), z: Math.max(0, top.depth / 2 - r) };
-  }
-
-  // The offset actually shown: kept on the table even if the table's outline shrinks.
-  function shownOffset(top) {
-    return clampOffset(run.offset, slideLimits(top));
-  }
-
-  // Where the anchor goes: the table centre plus the site's offset.
+  // Where the anchor goes: the table centre, just above its surface.
   function anchorPosition(top) {
-    const shift = tableOffsetToWorld(shownOffset(top), top.yaw);
-    return { x: top.center.x + shift.x, y: top.center.y + SURFACE_GAP, z: top.center.z + shift.z };
+    return { x: top.center.x, y: top.center.y + SURFACE_GAP, z: top.center.z };
   }
 
   function lockedTop() {
@@ -459,6 +496,35 @@ export function initApp() {
     anchor.rotation.set(0, top.yaw, 0);
     anchor.scale.setScalar(siteScale(top));
     anchor.visible = true;
+  }
+
+  // Where the excavator is and how it's moving, in the room and on the table (metres), for
+  // the e2e test and the debug log.
+  function excavatorSnapshot() {
+    const top = lockedTop();
+    const d = run.drive;
+    const scale = top ? siteScale(top) : 1;
+    const metres = SITE_UNIT * scale;
+    const p = excavator.getWorldPosition(new THREE.Vector3());
+    const forward = outOfFrame(forwardOf(d.heading), anchor.rotation.y + site.rotation.y); // site frame -> room
+    const onTable = top && intoFrame({ x: p.x - top.center.x, z: p.z - top.center.z }, top.yaw);
+    return {
+      position: p.toArray(),
+      forward: [forward.x, forward.z],
+      heading: d.heading,
+      swing: d.swing,
+      speed: d.speed * metres,
+      onTable: onTable && { x: onTable.x, z: onTable.z },
+      limits: top && { x: Math.max(0, top.width / 2 - bodyRadius * metres), z: Math.max(0, top.depth / 2 - bodyRadius * metres) },
+      radius: bodyRadius * metres,
+      blocked: Boolean(d.blocked),
+      atHome: d.x === excavatorHome.x && d.z === excavatorHome.z && d.heading === excavatorHome.heading && d.swing === 0,
+      // Gap between its body circle and the nearest of the worker and the rock pile.
+      clearance: Math.min(...obstacles.map((o) => Math.hypot(d.x - o.x, d.z - o.z) - bodyRadius - o.r)) * metres,
+      digTime: run.digTime,
+      digging: run.digging,
+      steering,
+    };
   }
 
   // World-space box round the site's solid parts (not its shadows), for the e2e test.
@@ -503,8 +569,8 @@ export function initApp() {
         const count = run.candidates.length;
         const lines = [];
         if (run.seenAt === null) lines.push(directionHint(siteCentre(table.top)));
-        lines.push('Left stick moves it, right stick spins it.');
-        lines.push('Hold A to repaint the excavator.');
+        lines.push('Left stick drives, right stick swings the cab.');
+        lines.push('Hold A to dig, B to repaint.');
         if (count > 1) {
           lines.push('Pull the trigger or pinch for the next table.');
           const index = tracker.indexOf(run.candidates, run.viewer) + 1;
@@ -626,12 +692,11 @@ export function initApp() {
         radius: siteRadius * anchor.scale.x,
         yaw: anchor.rotation.y,
         spin: site.rotation.y,
-        offset: { ...run.offset },
-        limits: lockedTop() ? slideLimits(lockedTop()) : null,
         bounds: anchor.visible ? solidBounds() : null,
         color: `#${paint.color.getHexString(THREE.SRGBColorSpace)}`,
         digPhase: run.digPose?.phase ?? null,
       },
+      excavator: excavatorSnapshot(),
       panel: panel.mesh.visible ? panel.key : null,
       xrVisibility: renderer.xr.getSession()?.visibilityState ?? null,
       depth: renderer.xr.isPresenting
@@ -660,6 +725,22 @@ export function initApp() {
     }),
   };
   return api;
+}
+
+function loadSteering() {
+  try {
+    return localStorage.getItem(STEERING_KEY) === 'absolute' ? 'absolute' : 'relative';
+  } catch {
+    return 'relative'; // storage blocked
+  }
+}
+
+function saveSteering(mode) {
+  try {
+    localStorage.setItem(STEERING_KEY, mode);
+  } catch {
+    // storage blocked: it lasts until the page reloads
+  }
 }
 
 function round(value, digits = 3) {
