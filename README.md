@@ -1,6 +1,6 @@
 # Table Cube
 
-A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres. It's about 42 × 20 cm, and shrinks to fit smaller tables. The excavator digs on a loop (reach into the pile, scoop, lift, dump) with engine, hydraulic and rock sounds coming from it. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
+A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres. It's about 42 × 20 cm, and shrinks to fit smaller tables. The excavator digs on a loop (reach into the pile, scoop, lift, dump) with engine, hydraulic and rock sounds coming from it (off until you turn them on from the menu). On Quest 3 your hands and real objects in front of it hide it, using the headset's depth sensing. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
 
 ## Requirements
 
@@ -52,7 +52,7 @@ The dig site goes on the nearest table, preferring one in front of you when it's
 | Left thumbstick | Push it to slide the dig site across the table: forward moves it away from you, right moves it to your right, whichever way the table is turned. It stops at the table's edge. Moving to another table puts it back at that table's centre. |
 | Right thumbstick | Push it to spin the dig site slowly: right turns it clockwise, left anticlockwise, and the further you push the faster it turns. |
 | Hold **A** | The excavator's paint cycles through colours while you hold it, and keeps the colour it reached when you let go. |
-| **Sound on / Sound off** on the menu | Mutes or unmutes the dig site. The setting is remembered in this browser. |
+| **Sound off / Sound on** on the menu | Turns the dig site's sound on or off. It starts off, and your choice is remembered in this browser. |
 | The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload** reloads the app, **Sound** turns the sound on or off (handy after a code change, since the browser's own controls are out of reach in AR). Its bottom line shows when the app's files last changed ("Updated …"), the same as under the title on the page, so you can tell whether the headset is running the latest version. |
 | Pinch does nothing | Use a controller trigger, or allow hand tracking from the same site-info icon and reload. |
 
@@ -89,7 +89,8 @@ npm run test:e2e  # headless Chrome + emulator: checks the dig site lands on the
 2. **Finding tables.** Every frame, the app reads `frame.detectedPlanes` and keeps horizontal planes whose `semanticLabel` is `table` (or the older `desk`). If there are no such planes, it falls back to `frame.detectedMeshes` (Quest also exposes each table as a box volume).
 3. **Centre of the table.** The table top's polygon is in plane space. The app takes its area-weighted centroid and transforms it into the reference space. It never trusts the direction of the plane's normal: on Quest the table plane's +Y axis points *down*, so the dig site is lifted along the reference space's up axis. Only the plane's yaw is copied, so the site lines up with the table edges.
 4. **Which table.** The app picks the nearest table, counting tables outside your view 1.5 m further away, then stays locked on that `XRPlane` object, so the dig site doesn't jump when you walk around. Quest delivers the room's tables over the first frames, so that first pick is provisional: it's made again whenever a new table arrives, until you press the trigger, slide or spin. If the table briefly drops out of the scene data, the site stays where it is for up to a second, and a table that comes back in the same place is treated as the same one, so your slide, spin and choice of table are kept. Trigger or pinch cycles through the tables, ordered by distance from where you stood when the table was picked.
-5. **Messages.** Quest Browser has no DOM overlay in AR, so status text is drawn on a canvas panel that follows your head.
+5. **Occlusion.** The session also asks for `depth-sensing` (optional, `gpu-optimized`). With it, three.js writes the real world's depth into the depth buffer each frame before drawing, so real things in front of the dig site hide it. The edges are hard (one depth sample per pixel, about 5 m range).
+6. **Messages.** Quest Browser has no DOM overlay in AR, so status text is drawn on a canvas panel that follows your head.
 
 The geometry and selection logic lives in [src/tableLocator.js](src/tableLocator.js) and has no three.js or browser dependency.
 

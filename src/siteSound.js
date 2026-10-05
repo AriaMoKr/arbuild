@@ -4,7 +4,9 @@ import * as THREE from 'three';
 // hydraulic hiss and whine while the arm moves, and a clatter of rocks on each scoop and
 // dump. It comes from the excavator, positioned in 3D, so it pans and fades with your
 // head. Browsers only start audio from a user gesture, so start() is called from the
-// Enter AR click.
+// Enter AR click. It's off until someone turns it on (the menu's Sound button), and that
+// choice is remembered; while off, the graph runs at zero volume, so turning it on in AR
+// doesn't depend on the trigger counting as a user gesture.
 
 const MUTE_KEY = 'tableCube.soundMuted';
 const CLATTER_PHASES = new Set(['scoop', 'dump']); // the bucket bites, then empties
@@ -159,9 +161,9 @@ function makeNoise(ctx) {
 
 function loadMuted() {
   try {
-    return localStorage.getItem(MUTE_KEY) === '1';
+    return localStorage.getItem(MUTE_KEY) !== '0'; // off unless it was turned on
   } catch {
-    return false;
+    return true;
   }
 }
 

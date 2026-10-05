@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+// The source text of three's depth-sensing module, for its occlusion shaders (see depthPassWarmUp).
+import threeDepthSensingSource from 'three/src/renderers/webxr/WebXRDepthSensing.js?raw';
 import { StatusPanel } from './statusPanel.js';
 import { XrMenu } from './xrMenu.js';
 import { FrameTrace } from './frameTrace.js';
@@ -34,7 +36,12 @@ const SEEN_ANGLE = (40 * Math.PI) / 180; // site within this angle of the gaze c
 // and we can explain what's wrong instead of failing to enter AR at all.
 const SESSION_INIT = {
   requiredFeatures: [],
-  optionalFeatures: ['local-floor', 'plane-detection', 'mesh-detection', 'hand-tracking'],
+  optionalFeatures: ['local-floor', 'plane-detection', 'mesh-detection', 'hand-tracking', 'depth-sensing'],
+  // Occlusion: with gpu-optimized depth, three.js writes the real world's depth into the
+  // depth buffer before drawing, so real things in front of the dig site (hands, objects)
+  // hide it. An empty format list lets the browser pick its native format, which is what
+  // three's occlusion pass reads (same as three's own depth-sensing example).
+  depthSensing: { usagePreference: ['gpu-optimized'], dataFormatPreference: [] },
 };
 
 // After leaving AR, the 2D page is where the user fixes these, so repeat the fix there.
@@ -87,6 +94,8 @@ export function initApp() {
   let spinDirection = -1;
 
   const panel = new StatusPanel();
+  const depthWarmUp = depthPassWarmUp();
+  if (depthWarmUp) scene.add(depthWarmUp);
   scene.add(panel.mesh);
 
   // Exit AR / Reload page / "Updated …", above the left hand (src/xrMenu.js).
@@ -120,6 +129,7 @@ export function initApp() {
     roomCaptureUsed: false,
     state: 'idle',
     sceneObjectCount: 0,
+    depthSince: null, // frame time of the first depth frame (occlusion), for the debug log
   };
   // Frame timing over the last second, for the debug channel's snapshots.
   const frameStats = { since: null, last: null, count: 0, worstMs: 0, fps: null, worstFrameMs: null };
@@ -170,6 +180,11 @@ export function initApp() {
     xrSession.addEventListener('select', onSelect);
     // 'visible', 'visible-blurred' (a system menu is up) or 'hidden' (e.g. the headset is off).
     xrSession.addEventListener('visibilitychange', () => console.info(`[session] visibility: ${xrSession.visibilityState}`));
+    console.info(
+      hasFeature(xrSession, 'depth-sensing') && xrSession.enabledFeatures
+        ? `[depth] depth sensing on: ${xrSession.depthUsage}, ${xrSession.depthDataFormat}`
+        : '[depth] depth sensing not available: no occlusion',
+    );
   }
 
   function endAR() {
@@ -193,6 +208,7 @@ export function initApp() {
       roomCaptureUsed: false,
       state: 'scanning',
       sceneObjectCount: 0,
+      depthSince: null,
     });
     Object.assign(frameStats, { since: null, last: null, count: 0, worstMs: 0, fps: null, worstFrameMs: null });
     tracker.reset();
@@ -268,6 +284,10 @@ export function initApp() {
     const dt = run.lastTime === null ? 0 : Math.min((time - run.lastTime) / 1000, 0.1);
     run.lastTime = time;
     recordFrame(time);
+    if (run.depthSince === null && renderer.xr.hasDepthSensing()) {
+      run.depthSince = time;
+      console.info(`[depth] first depth frame ${Math.round(time - run.startTime)} ms into the session: occlusion active`);
+    }
 
     const viewerPose = frame.getViewerPose(refSpace);
     if (viewerPose) {
@@ -604,6 +624,9 @@ export function initApp() {
       },
       panel: panel.mesh.visible ? panel.key : null,
       xrVisibility: renderer.xr.getSession()?.visibilityState ?? null,
+      depth: renderer.xr.isPresenting
+        ? { usage: renderer.xr.getSession()?.depthUsage ?? null, format: renderer.xr.getSession()?.depthDataFormat ?? null, active: renderer.xr.hasDepthSensing() }
+        : null,
       enabledFeatures: renderer.xr.getSession()?.enabledFeatures ?? null,
       referenceSpaceType: renderer.xr.isPresenting ? activeReferenceSpaceType : null,
       // Extra detail for the debug channel (src/debugChannel.js).
@@ -627,6 +650,30 @@ export function initApp() {
     }),
   };
   return api;
+}
+
+/**
+ * With depth sensing, three.js draws the real world's depth using its own ShaderMaterial,
+ * made the first time depth arrives, so its shader compiled mid-session. This returns a
+ * hidden mesh with an identical material (shaders read from the installed three's own
+ * source, so they always match) for precompile() and warmUpDraw() to handle before AR.
+ */
+function depthPassWarmUp() {
+  const shader = (name) => threeDepthSensingSource.match(new RegExp(`const ${name} = \`([\\s\\S]*?)\`;`))?.[1];
+  const vertexShader = shader('_occlusion_vertex');
+  const fragmentShader = shader('_occlusion_fragment');
+  if (!vertexShader || !fragmentShader) {
+    console.warn("[shaders] couldn't find three's occlusion shaders; it will compile on first use");
+    return null;
+  }
+  const material = new THREE.ShaderMaterial({
+    vertexShader,
+    fragmentShader,
+    uniforms: { depthColor: { value: null }, depthWidth: { value: 1 }, depthHeight: { value: 1 } },
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), material);
+  mesh.visible = false;
+  return mesh;
 }
 
 function round(value, digits = 3) {

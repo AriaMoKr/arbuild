@@ -322,7 +322,10 @@ const scenarios = {
     if (!(before.programs > 0) || after.programs !== before.programs) {
       throw new Error(`shader programs: ${before.programs} before AR, ${after.programs} in AR; precompile missed some (${precompiled})`);
     }
-    if (!(before.geometries > 50) || after.geometries !== before.geometries) {
+    // With depth sensing, three's occlusion pass adds its own 4-vertex plane on first use; that
+    // one is allowed. Everything of ours (the dig site's ~80 meshes) must already be uploaded.
+    const depthPlane = after.depth?.active ? 1 : 0;
+    if (!(before.geometries > 50) || after.geometries !== before.geometries + depthPlane) {
       throw new Error(`GPU geometries: ${before.geometries} before AR, ${after.geometries} in AR; the warm-up draw missed some (${precompiled})`);
     }
     if (s.referenceSpaceType !== 'local-floor') throw new Error(`reference space ${s.referenceSpaceType}`);
@@ -551,27 +554,54 @@ const scenarios = {
       if (!seen.includes(phase)) throw new Error(`dig phase ${phase} never showed up (saw ${seen.join(' → ')})`);
     }
 
-    // Sound runs (headless Chrome is started with autoplay allowed), and the menu's Sound button mutes it.
+    // The audio runs (headless Chrome is started with autoplay allowed) but is off by default;
+    // the menu's Sound button turns it on and off again.
     let s = await snapshot(browser);
     if (s.sound.state !== 'running') throw new Error(`audio state ${s.sound.state}`);
-    if (s.sound.muted || s.menu.labels.sound !== 'Sound on') throw new Error(`sound should start on: ${JSON.stringify(s.sound)}, label ${s.menu.labels.sound}`);
+    if (!s.sound.muted || s.menu.labels.sound !== 'Sound off') throw new Error(`sound should start off: ${JSON.stringify(s.sound)}, label ${s.menu.labels.sound}`);
     await browser.evaluate(`(() => { const d = window.__iwer.xrDevice; d.position.set(0, 1.6, 0); d.quaternion.set(0, 0, 0, 1); })()`);
     await sleep(300); // let the menu turn to face the new head position before aiming at it
     await aimAtMenuButton(browser, 'sound');
     await clickTrigger(browser);
-    await browser.waitFor('window.__app.snapshot().sound.muted === true', { timeout: 3000, label: 'muted by the menu' });
+    await browser.waitFor('window.__app.snapshot().sound.muted === false', { timeout: 3000, label: 'turned on by the menu' });
     s = await snapshot(browser);
-    if (s.menu.labels.sound !== 'Sound off') throw new Error(`label after muting: ${s.menu.labels.sound}`);
-    await waitForDebugLog(/^\[sound\] off$/);
-    await clickTrigger(browser);
-    await browser.waitFor('window.__app.snapshot().sound.muted === false', { timeout: 3000, label: 'unmuted by the menu' });
+    if (s.menu.labels.sound !== 'Sound on') throw new Error(`label after turning on: ${s.menu.labels.sound}`);
     await waitForDebugLog(/^\[sound\] on$/);
+    await clickTrigger(browser);
+    await browser.waitFor('window.__app.snapshot().sound.muted === true', { timeout: 3000, label: 'turned off by the menu' });
+    await waitForDebugLog(/^\[sound\] off$/);
 
     await browser.evaluate('window.__app.endAR()');
     await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
     await browser.waitFor(`window.__app.snapshot().sound.state === 'suspended'`, { timeout: 3000, label: 'audio suspended after AR' });
     assertNoProblems(browser);
     return `${seen.join(' → ')}; ${shots.join(', ')}`;
+  },
+
+  async 'meeting room: depth sensing hides the dig site behind real things'(browser, base) {
+    await openApp(browser, base, 'emulate=1&env=meeting_room');
+    await enterAR(browser);
+    await browser.waitFor('window.__app.snapshot().depth?.active === true', { timeout: 5000, label: 'depth sensing active' });
+    const s = await snapshot(browser);
+    if (s.depth.usage !== 'gpu-optimized') throw new Error(`depth usage ${s.depth.usage}`);
+    if (!s.enabledFeatures.includes('depth-sensing')) throw new Error('depth-sensing not enabled');
+    await waitForDebugLog(/^\[depth\] depth sensing on: gpu-optimized/);
+    await waitForDebugLog(/^\[depth\] first depth frame \d+ ms into the session: occlusion active$/);
+
+    // Eyes 3 cm below the table top, 1.4 m from the site: the table's near edge is in front of
+    // the lower half of the dig site, so occlusion must cut it off there.
+    await browser.evaluate(`(() => {
+      const d = window.__iwer.xrDevice;
+      d.position.set(0.069, ${MEETING_ROOM_TABLE[1] - 0.03}, -0.2);
+      const pitch = 3 * Math.PI / 180;
+      d.quaternion.set(Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2));
+    })()`);
+    await sleep(800);
+    const shot = await browser.screenshot('occlusion-low-view');
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    assertNoProblems(browser);
+    return shot;
   },
 
   async 'menu on the left controller: version line, Exit AR and Reload page'(browser, base) {
