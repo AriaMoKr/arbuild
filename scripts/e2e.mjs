@@ -973,11 +973,18 @@ const scenarios = {
       throw new Error(`stick forward moved the excavator ${along.toFixed(3)} m along and ${across.toFixed(3)} m across its forward [${fx.toFixed(2)}, ${fz.toFixed(2)}]`);
     }
     if (driven.atHome) throw new Error('the excavator still counts as at home after driving');
+    // Each table keeps its own dig site: the others start fresh, and back on the first one
+    // the excavator is where it was driven to.
     for (let i = 1; i <= 4; i++) {
       s = await pressTrigger(browser);
       if (s.tableIndex !== i % 4) throw new Error(`press ${i}: expected index ${i % 4}, got ${s.tableIndex}`);
-      if (s.panel?.startsWith(`Table ${(i % 4) + 1} of 4`) !== true) throw new Error(`press ${i}: hint panel ${s.panel}`);
-      if (!s.excavator.atHome) throw new Error(`press ${i}: the excavator wasn't back home on the new table`);
+      if (i < 4) {
+        if (s.panel?.startsWith(`Table ${i + 1} of 4`) !== true) throw new Error(`press ${i}: hint panel ${s.panel}`);
+        if (!s.excavator.atHome) throw new Error(`press ${i}: the excavator wasn't parked at home on a new table`);
+      } else {
+        if (!s.panel?.startsWith('Your dig site is back')) throw new Error(`back on the first table: panel ${s.panel}`);
+        assertNear(s.excavator.position, driven.position, 'back on the first table, the excavator');
+      }
       visited.push(s.site.position);
     }
     // Every table visited exactly once, then back to the first.
@@ -1024,6 +1031,72 @@ const scenarios = {
     await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
     assertNoProblems(browser);
     return s.panel.split('\n')[0];
+  },
+
+  async 'living room: each table keeps its own dig site, also after a reload'(browser, base) {
+    await openApp(browser, base, 'emulate=1&env=living_room');
+    let s = await enterAR(browser);
+    const left = 'window.__iwer.xrDevice.controllers.left';
+    const right = 'window.__iwer.xrDevice.controllers.right';
+    const drive = (x, y, ms) =>
+      browser.evaluate(`(async () => {
+        ${left}.updateAxes('thumbstick', ${x}, ${y});
+        await new Promise((r) => setTimeout(r, ${ms}));
+        ${left}.updateAxes('thumbstick', 0, 0);
+        await new Promise((r) => setTimeout(r, 600));
+      })()`);
+    const swing = (x, ms) =>
+      browser.evaluate(`(async () => {
+        ${right}.updateAxes('thumbstick', ${x}, 0);
+        await new Promise((r) => setTimeout(r, ${ms}));
+        ${right}.updateAxes('thumbstick', 0, 0);
+        await new Promise((r) => setTimeout(r, 600));
+      })()`);
+    const sameExcavator = (a, b, label) => {
+      assertNear(a.excavator.position, b.excavator.position, `${label}: excavator`);
+      const turned = (x, y) => Math.abs(Math.atan2(Math.sin(x - y), Math.cos(x - y)));
+      if (turned(a.excavator.heading, b.excavator.heading) > 0.01 || turned(a.excavator.swing, b.excavator.swing) > 0.01) {
+        throw new Error(`${label}: heading/swing ${b.excavator.heading}/${b.excavator.swing}, was ${a.excavator.heading}/${a.excavator.swing}`);
+      }
+    };
+
+    // Table 1: drive a little. Table 2: swing the cab instead.
+    await drive(0, -1, 400);
+    const one = await snapshot(browser);
+    s = await pressTrigger(browser);
+    if (!s.excavator.atHome) throw new Error('table 2 should start fresh');
+    await swing(1, 600);
+    const two = await snapshot(browser);
+    if (!(two.excavator.swing < -0.3)) throw new Error(`the swing on table 2: ${two.excavator.swing}`);
+
+    // Round to table 1: as it was left. On to table 2: as it was left.
+    s = await pressTrigger(browser);
+    s = await pressTrigger(browser);
+    s = await pressTrigger(browser);
+    if (s.tableIndex !== 0) throw new Error(`expected table 1, got index ${s.tableIndex}`);
+    sameExcavator(one, s, 'table 1 again');
+    s = await pressTrigger(browser);
+    sameExcavator(two, s, 'table 2 again');
+    await sleep(1500); // saved
+
+    // Reload and come back: the last table used (2) gets its site back, and table 1 still has its own.
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    await openApp(browser, base, 'emulate=1&env=living_room', { remember: true });
+    await enterAR(browser);
+    await browser.waitFor('window.__app.snapshot().memory.restored', { timeout: 5000, label: 'restored' });
+    s = await snapshot(browser);
+    if (s.pick.reason !== 'remembered' || s.tableIndex !== 1) throw new Error(`after the reload: ${s.pick.reason}, table index ${s.tableIndex}`);
+    sameExcavator(two, s, 'table 2 after the reload');
+    if (s.memory.sites < 2) throw new Error(`only ${s.memory.sites} site(s) restored`);
+    await browser.waitFor('window.__app.snapshot().memory.pending === false', { label: 'anchors found' });
+    for (let i = 0; i < 3; i++) s = await pressTrigger(browser);
+    if (s.tableIndex !== 0) throw new Error(`expected table 1, got index ${s.tableIndex}`);
+    sameExcavator(one, s, 'table 1 after the reload');
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    assertNoProblems(browser);
+    return `${s.memory.sites} dig sites kept; tables 1 and 2 came back as left, before and after a reload`;
   },
 
   async 'other rooms: dig site stands on a table top'(browser, base) {

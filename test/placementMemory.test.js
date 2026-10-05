@@ -1,6 +1,16 @@
 import { test, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { PLACEMENT_KEY, PlacementMemory, RESTORE_TIMEOUT_MS, parseRecord, poseOf, recordText, siteMoved } from '../src/placementMemory.js';
+import {
+  MAX_SITES,
+  PLACEMENT_KEY,
+  PlacementMemory,
+  RESTORE_TIMEOUT_MS,
+  nearestSite,
+  parseRecord,
+  poseOf,
+  recordText,
+  siteMoved,
+} from '../src/placementMemory.js';
 
 // Fakes of the WebXR pieces the memory uses: anchors that sit where they were made,
 // persistent handles kept by the fake browser across "sessions", and localStorage.
@@ -65,82 +75,135 @@ class Browser {
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
-const POSE = { x: 0.1, y: 0.75, z: -1.5, yaw: 0.4 };
-const STATE = { excavator: { x: 10 }, rocks: [] };
+const TABLE_A = { x: 0.1, y: 0.75, z: -1.5, yaw: 0.4 };
+const TABLE_B = { x: 2, y: 0.5, z: 1, yaw: 0 };
+const saved = (storage) => parseRecord(storage.getItem(PLACEMENT_KEY));
 
 beforeEach(() => {
   mock.method(console, 'info', () => {});
   mock.method(console, 'warn', () => {});
 });
 
-test('parseRecord accepts its own records and refuses anything else', () => {
-  const text = recordText('abc', STATE, '2026-10-05T00:00:00Z');
-  assert.deepEqual(parseRecord(text), { anchor: 'abc', savedAt: '2026-10-05T00:00:00Z', state: STATE });
-  for (const bad of [null, '', 'nonsense', '{}', JSON.stringify({ v: 2, anchor: 'a', state: {} }), JSON.stringify({ v: 1, anchor: '', state: {} })]) {
+test('parseRecord reads its records (version 1 as a single site) and refuses anything else', () => {
+  const v2 = recordText('a', [{ anchor: 'a', savedAt: null, usedAt: 5, state: { n: 1 } }]);
+  assert.deepEqual(parseRecord(v2), { current: 'a', sites: [{ anchor: 'a', savedAt: null, usedAt: 5, state: { n: 1 } }] });
+  const v1 = JSON.stringify({ v: 1, anchor: 'old', savedAt: '2026-10-05T00:00:00Z', state: { n: 2 } });
+  assert.deepEqual(parseRecord(v1), { current: 'old', sites: [{ anchor: 'old', savedAt: '2026-10-05T00:00:00Z', usedAt: 0, state: { n: 2 } }] });
+  for (const bad of [null, '', 'nonsense', '{}', JSON.stringify({ v: 3, sites: [] }), JSON.stringify({ v: 1, anchor: '', state: {} })]) {
     assert.equal(parseRecord(bad), null, String(bad));
   }
+  // Broken sites inside a good record are dropped.
+  assert.equal(parseRecord(JSON.stringify({ v: 2, current: 'a', sites: [{ anchor: 'a' }, null] })).sites.length, 0);
 });
 
-test('poseOf reads position and turn about +Y; siteMoved ignores jitter', () => {
+test('poseOf reads position and turn about +Y; siteMoved ignores jitter; nearestSite matches tables', () => {
   const half = 0.4 / 2;
   const pose = poseOf(new XRRigidTransform({ x: 1, y: 2, z: 3 }, { y: Math.sin(half), w: Math.cos(half) }));
   assert.ok(Math.abs(pose.yaw - 0.4) < 1e-12);
-  assert.equal(pose.x, 1);
-  assert.equal(siteMoved(POSE, { ...POSE, x: POSE.x + 0.01 }), false);
-  assert.equal(siteMoved(POSE, { ...POSE, x: POSE.x + 0.2 }), true);
-  assert.equal(siteMoved(POSE, { ...POSE, yaw: POSE.yaw + 1 }), true);
-  assert.equal(siteMoved(null, POSE), true);
+  assert.equal(siteMoved(TABLE_A, { ...TABLE_A, x: TABLE_A.x + 0.01 }), false);
+  assert.equal(siteMoved(TABLE_A, { ...TABLE_A, x: TABLE_A.x + 0.2 }), true);
+  assert.equal(siteMoved(TABLE_A, { ...TABLE_A, yaw: 1.4 }), true);
+  const sites = [{ pose: TABLE_A }, { pose: TABLE_B }, { pose: null }];
+  assert.equal(nearestSite(sites, { x: 0.2, y: 0.76, z: -1.45 }), sites[0]);
+  assert.equal(nearestSite(sites, { x: 0.5, y: 0.75, z: -1.5 }), null, '40 cm off');
+  assert.equal(nearestSite(sites, { x: 2, y: 0.8, z: 1 }), null, 'another height');
 });
 
-test('the chosen site is anchored once and saved; a later session finds it and gets the state back once', async () => {
+test('a site the user works on is anchored once and saved', async () => {
   const browser = new Browser();
   const storage = new Storage();
   const memory = new PlacementMemory(storage);
   memory.start(browser.session(), 0);
   assert.deepEqual(memory.locate(browser.frame(), null, 0), { pose: null, pending: false }); // nothing saved yet
-
-  memory.keep(browser.frame(), null, POSE, () => STATE, 100);
-  memory.keep(browser.frame(), null, POSE, () => STATE, 110); // while the first is being made: no second anchor
+  memory.keep(browser.frame(), null, TABLE_A, () => ({ n: 1 }), 100);
+  memory.keep(browser.frame(), null, TABLE_A, () => ({ n: 1 }), 110); // while the first is being made: no second anchor
   await settle();
   assert.equal(browser.persistent.size, 1);
-  const record = parseRecord(storage.getItem(PLACEMENT_KEY));
-  assert.equal(record.anchor, [...browser.persistent.keys()][0]);
-  assert.deepEqual(record.state, STATE);
-
-  // In this session the site's own pose stands in, and is where the anchor is.
-  const here = memory.locate(browser.frame(), null, 200).pose;
-  assert.ok(Math.abs(here.yaw - POSE.yaw) < 1e-9 && Math.abs(here.x - POSE.x) < 1e-9);
-  memory.end();
-
-  // Next session: wait for the anchor, then the saved state comes back, once.
-  const next = new PlacementMemory(storage);
-  next.start(browser.session(), 1000);
-  assert.equal(next.locate(browser.frame(), null, 1000).pending, true);
-  await settle();
-  const found = next.locate(browser.frame(), null, 1016);
-  assert.equal(found.pending, false);
-  assert.ok(Math.abs(found.pose.x - POSE.x) < 1e-9 && Math.abs(found.pose.yaw - POSE.yaw) < 1e-9);
-  assert.deepEqual(next.takeSavedState(), STATE);
-  assert.equal(next.takeSavedState(), null);
+  const record = saved(storage);
+  assert.equal(record.current, 'uuid-1');
+  assert.deepEqual(record.sites.map((s) => [s.anchor, s.state]), [['uuid-1', { n: 1 }]]);
+  assert.equal(memory.locate(browser.frame(), null, 200).pose.x, TABLE_A.x);
 });
 
-test('moving the site to another table anchors it again and frees the old anchor', async () => {
+test('each table keeps its own site: leaving one saves it, coming back finds it as it was', async () => {
   const browser = new Browser();
   const storage = new Storage();
   const memory = new PlacementMemory(storage);
   memory.start(browser.session(), 0);
-  memory.keep(browser.frame(), null, POSE, () => STATE, 0);
+  let live = { on: 'A', n: 1 };
+  memory.keep(browser.frame(), null, TABLE_A, () => live, 0);
   await settle();
-  const first = [...browser.persistent.keys()][0];
-  const elsewhere = { x: 2, y: 0.5, z: 1, yaw: 0 };
-  memory.keep(browser.frame(), null, elsewhere, () => ({ moved: true }), 2000);
-  // Until the new anchor exists, the new place is what counts.
-  assert.equal(memory.locate(browser.frame(), null, 2000).pose.x, 2);
+  live = { on: 'A', n: 2 }; // changed since the last save
+
+  // To table B: nothing kept there; leaving A saves it as it was left.
+  assert.equal(memory.siteFor(TABLE_B), null);
+  memory.select(null);
+  assert.deepEqual(saved(storage).sites[0].state, { on: 'A', n: 2 });
+  memory.keep(browser.frame(), null, TABLE_B, () => ({ on: 'B' }), 2000);
+  await settle();
+  assert.equal(browser.persistent.size, 2, 'A keeps its anchor');
+  assert.equal(saved(storage).current, 'uuid-2', 'B is where the user is now');
+
+  // Back to A: its site, with its state.
+  const a = memory.siteFor({ ...TABLE_A, x: TABLE_A.x + 0.05 });
+  assert.ok(a);
+  assert.deepEqual(a.state, { on: 'A', n: 2 });
+  memory.select(a);
+  memory.keep(browser.frame(), null, TABLE_A, () => ({ on: 'A', n: 3 }), 4000);
+  assert.equal(saved(storage).current, 'uuid-1');
+  assert.deepEqual(saved(storage).sites.find((s) => s.anchor === 'uuid-2').state, { on: 'B' });
+});
+
+test('a later session restores every site, waits for the last one used, and offers each by table', async () => {
+  const browser = new Browser();
+  const storage = new Storage();
+  const first = new PlacementMemory(storage);
+  first.start(browser.session(), 0);
+  first.keep(browser.frame(), null, TABLE_A, () => ({ on: 'A' }), 0);
+  await settle();
+  first.select(null);
+  first.keep(browser.frame(), null, TABLE_B, () => ({ on: 'B' }), 2000);
+  await settle();
+  first.end();
+
+  const next = new PlacementMemory(storage);
+  next.start(browser.session(), 10000);
+  assert.equal(next.locate(browser.frame(), null, 10000).pending, true);
+  await settle();
+  const found = next.locate(browser.frame(), null, 10016);
+  assert.equal(found.pending, false);
+  assert.equal(found.pose.x, TABLE_B.x, 'the table the user was last on');
+  assert.deepEqual(next.siteFor(TABLE_A).state, { on: 'A' });
+  assert.deepEqual(next.siteFor(TABLE_B).state, { on: 'B' });
+});
+
+test('the same site, moved a little (the table outline changed), is anchored again and the old anchor freed', async () => {
+  const browser = new Browser();
+  const storage = new Storage();
+  const memory = new PlacementMemory(storage);
+  memory.start(browser.session(), 0);
+  memory.keep(browser.frame(), null, TABLE_A, () => ({ n: 1 }), 0);
+  await settle();
+  memory.keep(browser.frame(), null, { ...TABLE_A, x: TABLE_A.x + 0.1 }, () => ({ n: 1 }), 2000);
   await settle();
   assert.deepEqual([...browser.persistent.keys()], ['uuid-2']);
-  assert.notEqual(first, 'uuid-2');
-  assert.equal(parseRecord(storage.getItem(PLACEMENT_KEY)).anchor, 'uuid-2');
-  assert.deepEqual(parseRecord(storage.getItem(PLACEMENT_KEY)).state, { moved: true });
+  assert.equal(saved(storage).sites.length, 1);
+  assert.equal(memory.sites.length, 1);
+});
+
+test(`at most ${MAX_SITES} sites are kept: the one used longest ago goes`, async () => {
+  const browser = new Browser();
+  const storage = new Storage();
+  const memory = new PlacementMemory(storage);
+  memory.start(browser.session(), 0);
+  for (let i = 0; i <= MAX_SITES; i++) {
+    memory.select(null);
+    memory.keep(browser.frame(), null, { x: i, y: 0.75, z: 0, yaw: 0 }, () => ({ table: i }), i * 2000);
+    await settle();
+  }
+  assert.equal(browser.persistent.size, MAX_SITES);
+  assert.deepEqual(saved(storage).sites.map((s) => s.state.table).sort(), [1, 2, 3, 4, 5, 6]);
+  assert.equal(memory.siteFor({ x: 0, y: 0.75, z: 0 }), null);
 });
 
 test('saves at most once a second, and flush() writes the latest', async () => {
@@ -148,48 +211,70 @@ test('saves at most once a second, and flush() writes the latest', async () => {
   const storage = new Storage();
   const memory = new PlacementMemory(storage);
   memory.start(browser.session(), 0);
-  memory.keep(browser.frame(), null, POSE, () => ({ n: 1 }), 0);
+  memory.keep(browser.frame(), null, TABLE_A, () => ({ n: 1 }), 0);
   await settle();
-  memory.keep(browser.frame(), null, POSE, () => ({ n: 2 }), 500);
-  assert.deepEqual(parseRecord(storage.getItem(PLACEMENT_KEY)).state, { n: 1 });
-  memory.keep(browser.frame(), null, POSE, () => ({ n: 3 }), 1000);
-  assert.deepEqual(parseRecord(storage.getItem(PLACEMENT_KEY)).state, { n: 3 });
-  memory.keep(browser.frame(), null, POSE, () => ({ n: 4 }), 1200);
+  memory.keep(browser.frame(), null, TABLE_A, () => ({ n: 2 }), 500);
+  assert.deepEqual(saved(storage).sites[0].state, { n: 1 });
+  memory.keep(browser.frame(), null, TABLE_A, () => ({ n: 3 }), 1000);
+  assert.deepEqual(saved(storage).sites[0].state, { n: 3 });
+  memory.keep(browser.frame(), null, TABLE_A, () => ({ n: 4 }), 1200);
   memory.flush();
-  assert.deepEqual(parseRecord(storage.getItem(PLACEMENT_KEY)).state, { n: 4 });
+  assert.deepEqual(saved(storage).sites[0].state, { n: 4 });
 });
 
-test('without the anchors feature nothing is kept between sessions, but the session still remembers', () => {
+test('without the anchors feature nothing is kept between sessions, but the session keeps its sites', () => {
   const browser = new Browser();
   const storage = new Storage();
-  storage.setItem(PLACEMENT_KEY, recordText('uuid-9', STATE, null));
+  storage.setItem(PLACEMENT_KEY, recordText('uuid-9', [{ anchor: 'uuid-9', savedAt: null, usedAt: 0, state: { old: true } }]));
   browser.persistent.set('uuid-9', new XRRigidTransform({}, {}));
   const memory = new PlacementMemory(storage);
   memory.start(browser.session({ anchors: false }), 0);
   assert.equal(memory.locate(browser.frame(), null, 0).pending, false);
-  assert.equal(memory.takeSavedState(), null);
-  memory.keep(browser.frame(), null, POSE, () => STATE, 0);
-  assert.deepEqual(memory.locate(browser.frame(), null, 10).pose, POSE);
+  memory.keep(browser.frame(), null, TABLE_A, () => ({ on: 'A' }), 0);
+  memory.select(null);
+  memory.keep(browser.frame(), null, TABLE_B, () => ({ on: 'B' }), 100);
+  assert.deepEqual(memory.locate(browser.frame(), null, 200).pose, TABLE_B);
+  assert.deepEqual(memory.siteFor(TABLE_A).state, { on: 'A' }, 'kept in the session');
   assert.equal(browser.persistent.size, 1, 'no anchor made');
+  assert.deepEqual(saved(storage).sites[0].state, { old: true }, 'storage untouched');
 });
 
 test('a saved anchor that is gone, or never turns up, means starting afresh', async () => {
   const browser = new Browser();
   const storage = new Storage();
-  storage.setItem(PLACEMENT_KEY, recordText('uuid-gone', STATE, null));
+  storage.setItem(PLACEMENT_KEY, recordText('uuid-gone', [{ anchor: 'uuid-gone', savedAt: null, usedAt: 0, state: {} }]));
   const memory = new PlacementMemory(storage);
   memory.start(browser.session(), 0);
-  assert.equal(memory.locate(browser.frame(), null, 0).pending, false);
-  assert.equal(memory.takeSavedState(), null);
+  assert.deepEqual(memory.locate(browser.frame(), null, 0), { pose: null, pending: false });
 
   // Restorable but never located (the room isn't recognised): give up after the timeout.
   browser.persistent.set('uuid-lost', new XRRigidTransform({}, {}));
-  storage.setItem(PLACEMENT_KEY, recordText('uuid-lost', STATE, null));
+  storage.setItem(PLACEMENT_KEY, recordText('uuid-lost', [{ anchor: 'uuid-lost', savedAt: null, usedAt: 0, state: {} }]));
   const lost = new PlacementMemory(storage);
   lost.start(browser.session(), 0);
   const frame = { createAnchor: () => Promise.reject(new Error('no')), getPose: () => null };
   await settle();
   assert.equal(lost.locate(frame, null, 100).pending, true);
-  assert.equal(lost.locate(frame, null, RESTORE_TIMEOUT_MS + 1).pending, false);
-  assert.equal(lost.takeSavedState(), null);
+  assert.deepEqual(lost.locate(frame, null, RESTORE_TIMEOUT_MS + 1), { pose: null, pending: false });
+});
+
+test('a site whose anchor turns up only after its table was chosen is carried on, not doubled', async () => {
+  const browser = new Browser();
+  const storage = new Storage();
+  const first = new PlacementMemory(storage);
+  first.start(browser.session(), 0);
+  first.keep(browser.frame(), null, TABLE_A, () => ({ on: 'A' }), 0);
+  await settle();
+  first.end();
+
+  const next = new PlacementMemory(storage);
+  next.start(browser.session(), 0);
+  await settle();
+  // The app chose the table before the anchor was located: no site for it yet.
+  next.select(null);
+  next.locate(browser.frame(), null, 16); // now it is
+  next.keep(browser.frame(), null, TABLE_A, () => ({ on: 'A', again: true }), 32);
+  await settle();
+  assert.equal(next.sites.length, 1);
+  assert.equal(browser.persistent.size, 1);
 });

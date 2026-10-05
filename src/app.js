@@ -401,20 +401,23 @@ export function initApp() {
         run.lockId = tracker.lockId;
         run.lockedAt = time;
         run.seenAt = null;
-        if (tracker.reason === 'remembered') {
-          // The user's own dig site: turned as it was, with everything where they left it.
-          // Saved state comes from an earlier session; otherwise the site only dropped out
-          // for a while (the headset was off), and what's in hand is already right.
-          site.rotation.y = snapQuarterTurn(remembered.pose.yaw - table.top.yaw);
-          const saved = memory.takeSavedState();
-          if (saved) {
-            applySiteState(saved);
-            run.restored = true;
-            console.info('[memory] put the dig site back as it was');
-          }
+        // Each table keeps its own dig site (src/placementMemory.js): one the user has
+        // worked on comes back turned as it was, with everything where they left it. A
+        // table without one starts with the site at its centre, square to the table and
+        // facing the user, the excavator parked at home and the rocks in their pile.
+        const kept = memory.siteFor(anchorPosition(table.top));
+        if (kept && kept === memory.current) {
+          // The same site, back after its table dropped out for a while (the headset was
+          // off): what's in hand is newer than anything saved.
+          site.rotation.y = snapQuarterTurn(kept.pose.yaw - table.top.yaw);
+        } else if (kept?.state) {
+          memory.select(kept); // saves the site being left first
+          site.rotation.y = snapQuarterTurn(kept.pose.yaw - table.top.yaw);
+          applySiteState(kept.state);
+          run.restored = true;
+          console.info('[memory] put the dig site back as it was');
         } else {
-          // A new table starts with the site at its centre, square to the table and
-          // facing the user, the excavator parked at home and the rocks in their pile.
+          memory.select(kept ?? null);
           site.rotation.y = quarterTurnToward(run.viewer, table.top.center, table.top.yaw);
           resetSite();
         }
