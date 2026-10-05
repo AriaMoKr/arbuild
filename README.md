@@ -69,10 +69,11 @@ Query parameters (dev server only):
 | `?env=meeting_room` | Synthetic room to load: `meeting_room` (default, one table), `office_small`, `living_room` (four tables), `office_large`, `music_room`. |
 | `?planes=1` | Draw the emulated planes and furniture boxes. |
 | `?emulate=1` / `?emulate=0` | Force the emulator on or off. |
+| `?occlusion=debug` | Colour the dig site by depth instead of hiding it: red = how hidden, green = real distance ÷ 3 m, blue = the site's own distance ÷ 3 m. Works on the headset too. |
 
 ### Debug log
 
-In dev builds, the page sends its console output, uncaught errors and a snapshot of the app's state back to the dev server, which appends them to `logs/quest-debug.jsonl` (one JSON object per line). That works from the headset too, with no USB cable. The snapshot covers detected tables, placement, frame rate and controllers, and is sent whenever something changes and every 10 s during AR. Errors and warnings from the page are also printed in the `npm run dev` terminal. It also records which table was picked and why, and when a table that briefly dropped out came back (`[tables] …`), every menu button press (`[menu] …`), how long the shaders took to compile before AR (`[shaders] …`), the frame timing of each session's first 3 seconds (`[startup] …`), and when the session's visibility changes, for example when the headset is taken off (`[session] …`). Add `?debug=0` to the URL to turn it off. None of this is in `npm run build`.
+In dev builds, the page sends its console output, uncaught errors and a snapshot of the app's state back to the dev server, which appends them to `logs/quest-debug.jsonl` (one JSON object per line). That works from the headset too, with no USB cable. The snapshot covers detected tables, placement, frame rate and controllers, and is sent whenever something changes and every 10 s during AR. Errors and warnings from the page are also printed in the `npm run dev` terminal. It also records which table was picked and why, and when a table that briefly dropped out came back (`[tables] …`), every menu button press (`[menu] …`), how long the shaders took to compile before AR (`[shaders] …`), the frame timing of each session's first 3 seconds (`[startup] …`), whether depth sensing started and the depth map's size and near/far planes (`[depth] …`), and when the session's visibility changes, for example when the headset is taken off (`[session] …`). Add `?debug=0` to the URL to turn it off. None of this is in `npm run build`.
 
 Tests:
 
@@ -81,7 +82,7 @@ npm test          # unit tests for the table geometry and selection logic
 npm run test:e2e  # headless Chrome + emulator: checks the dig site lands on the right tables
 ```
 
-`test:e2e` needs Chrome or Edge installed (set `CHROME_PATH` if it isn't found) and writes screenshots to `e2e-output/`.
+`test:e2e` needs Chrome or Edge installed (set `CHROME_PATH` if it isn't found) and writes screenshots to `e2e-output/`. `E2E_ONLY=depth npm run test:e2e` runs only the scenarios whose names contain "depth".
 
 ## How it works
 
@@ -89,7 +90,7 @@ npm run test:e2e  # headless Chrome + emulator: checks the dig site lands on the
 2. **Finding tables.** Every frame, the app reads `frame.detectedPlanes` and keeps horizontal planes whose `semanticLabel` is `table` (or the older `desk`). If there are no such planes, it falls back to `frame.detectedMeshes` (Quest also exposes each table as a box volume).
 3. **Centre of the table.** The table top's polygon is in plane space. The app takes its area-weighted centroid and transforms it into the reference space. It never trusts the direction of the plane's normal: on Quest the table plane's +Y axis points *down*, so the dig site is lifted along the reference space's up axis. Only the plane's yaw is copied, so the site lines up with the table edges.
 4. **Which table.** The app picks the nearest table, counting tables outside your view 1.5 m further away, then stays locked on that `XRPlane` object, so the dig site doesn't jump when you walk around. Quest delivers the room's tables over the first frames, so that first pick is provisional: it's made again whenever a new table arrives, until you press the trigger, slide or spin. If the table briefly drops out of the scene data, the site stays where it is for up to a second, and a table that comes back in the same place is treated as the same one, so your slide, spin and choice of table are kept. Trigger or pinch cycles through the tables, ordered by distance from where you stood when the table was picked.
-5. **Occlusion.** The session also asks for `depth-sensing` (optional, `gpu-optimized`). With it, three.js writes the real world's depth into the depth buffer each frame before drawing, so real things in front of the dig site hide it. The edges are hard (one depth sample per pixel, about 5 m range).
+5. **Occlusion.** The session also asks for `depth-sensing` (optional, `gpu-optimized`), so real things in front of the dig site, like your hands, hide it. The dig site's own shaders do it ([src/occlusion.js](src/occlusion.js)) instead of three.js's built-in pass, whose hard edges looked blocky round hands and flickered where the site touches the table. Each pixel averages 9 depth samples for soft edges, and a real surface only starts hiding the site once it's 2 cm in front of it (fully hidden at 5 cm), so the table's noisy depth never eats the rubble or the shadows.
 6. **Messages.** Quest Browser has no DOM overlay in AR, so status text is drawn on a canvas panel that follows your head.
 
 The geometry and selection logic lives in [src/tableLocator.js](src/tableLocator.js) and has no three.js or browser dependency.
@@ -106,6 +107,7 @@ src/main.js             entry point; loads the emulator in dev when needed
 src/app.js              renderer, AR session, per-frame table tracking, dig site placement
 src/digSite.js          the dig site: excavator, operator, worker and rocks from boxes, cylinders and spheres, and its dig cycle
 src/siteSound.js        engine, hydraulics and rock sounds, made with WebAudio and placed at the excavator
+src/occlusion.js        soft depth occlusion added to the dig site's materials
 src/tableLocator.js     table detection maths and table selection (pure, unit-tested)
 src/statusPanel.js      in-headset text panel
 src/xrMenu.js           in-AR menu above the left hand: Exit AR, Reload page, "Updated …"

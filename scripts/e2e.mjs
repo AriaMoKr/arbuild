@@ -182,6 +182,22 @@ async function connect(profile, proc, shutdown) {
       fs.writeFileSync(file, Buffer.from(res.data, 'base64'));
       return path.relative(root, file);
     },
+    /** Counts the coloured pixels on screen: the dig site's. The room and the panel are grey. */
+    async colouredPixels() {
+      const res = await send('Page.captureScreenshot', { format: 'png' });
+      return evaluate(`(async () => {
+        const image = await createImageBitmap(await (await fetch('data:image/png;base64,${res.data}')).blob());
+        const canvas = new OffscreenCanvas(image.width, image.height);
+        const context = canvas.getContext('2d');
+        context.drawImage(image, 0, 0);
+        const { data } = context.getImageData(0, 0, image.width, image.height);
+        let count = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          if (Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2]) > 20) count++;
+        }
+        return count;
+      })()`);
+    },
     async close() {
       await send('Browser.close').catch(() => {}); // graceful exit takes the child processes with it
       ws.close();
@@ -221,6 +237,19 @@ function assertNoProblems(browser) {
 }
 
 const snapshot = (b) => b.evaluate('window.__app.snapshot()');
+const pct = (fraction) => `${Math.round(fraction * 100)}%`;
+
+/** How much of the dig site depth occlusion leaves on screen: its pixels with and without. */
+async function shownFraction(browser) {
+  const shown = await browser.colouredPixels();
+  await browser.evaluate('window.__app.setOcclusion(false)');
+  await sleep(150);
+  const all = await browser.colouredPixels();
+  await browser.evaluate('window.__app.setOcclusion(true)');
+  await sleep(150);
+  if (all < 500) throw new Error(`the dig site is barely on screen (${all} px) even without occlusion`);
+  return shown / all;
+}
 
 async function openApp(browser, base, query) {
   await browser.goto(`${base}?${query}`);
@@ -322,10 +351,7 @@ const scenarios = {
     if (!(before.programs > 0) || after.programs !== before.programs) {
       throw new Error(`shader programs: ${before.programs} before AR, ${after.programs} in AR; precompile missed some (${precompiled})`);
     }
-    // With depth sensing, three's occlusion pass adds its own 4-vertex plane on first use; that
-    // one is allowed. Everything of ours (the dig site's ~80 meshes) must already be uploaded.
-    const depthPlane = after.depth?.active ? 1 : 0;
-    if (!(before.geometries > 50) || after.geometries !== before.geometries + depthPlane) {
+    if (!(before.geometries > 50) || after.geometries !== before.geometries) {
       throw new Error(`GPU geometries: ${before.geometries} before AR, ${after.geometries} in AR; the warm-up draw missed some (${precompiled})`);
     }
     if (s.referenceSpaceType !== 'local-floor') throw new Error(`reference space ${s.referenceSpaceType}`);
@@ -588,20 +614,37 @@ const scenarios = {
     await waitForDebugLog(/^\[depth\] depth sensing on: gpu-optimized/);
     await waitForDebugLog(/^\[depth\] first depth frame \d+ ms into the session: occlusion active$/);
 
-    // Eyes 3 cm below the table top, 1.4 m from the site: the table's near edge is in front of
-    // the lower half of the dig site, so occlusion must cut it off there.
+    // Eyes 1.5 cm below the table top, 1.3 m from the site. IWER's depth includes the table's
+    // bounding box, whose near edge (25 cm ahead) should hide the bottom ~6 cm of the site
+    // and fade the rest in above it. (At z -0.2 a chair in the room scan is 4 cm from the eyes.)
     await browser.evaluate(`(() => {
       const d = window.__iwer.xrDevice;
-      d.position.set(0.069, ${MEETING_ROOM_TABLE[1] - 0.03}, -0.2);
+      d.position.set(0.069, ${MEETING_ROOM_TABLE[1] - 0.015}, -0.25);
       const pitch = 3 * Math.PI / 180;
       d.quaternion.set(Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2));
     })()`);
     await sleep(800);
-    const shot = await browser.screenshot('occlusion-low-view');
+    const low = await shownFraction(browser);
+    if (low < 0.2 || low > 0.85) throw new Error(`behind the table edge ${pct(low)} of the dig site shows; expected only its top part`);
+    const shots = [await browser.screenshot('occlusion-low-view')];
+
+    // From above nothing real is in front of the site, and the table under it is within the
+    // tolerance: nothing may be hidden, the rubble and its bottom edge included.
+    await browser.evaluate(`(() => {
+      const d = window.__iwer.xrDevice;
+      d.position.set(0.069, 1.25, -0.95);
+      const pitch = -40 * Math.PI / 180;
+      d.quaternion.set(Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2));
+    })()`);
+    await sleep(800);
+    const above = await shownFraction(browser);
+    if (above < 0.97) throw new Error(`seen from above only ${pct(above)} of the dig site shows`);
+    shots.push(await browser.screenshot('occlusion-above-view'));
+
     await browser.evaluate('window.__app.endAR()');
     await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
     assertNoProblems(browser);
-    return shot;
+    return `${pct(low)} shown from low, ${pct(above)} from above; ${shots.join(', ')}`;
   },
 
   async 'menu on the left controller: version line, Exit AR and Reload page'(browser, base) {
@@ -762,7 +805,10 @@ let browser;
 let failed = 0;
 try {
   browser = await launchBrowser();
+  // E2E_ONLY=<text> runs just the scenarios whose name contains <text>.
+  const only = process.env.E2E_ONLY?.toLowerCase();
   for (const [name, run] of Object.entries(scenarios)) {
+    if (only && !name.toLowerCase().includes(only)) continue;
     try {
       const detail = await run(browser, base);
       console.log(`✔ ${name}${detail ? `  (${detail})` : ''}`);
