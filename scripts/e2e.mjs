@@ -991,6 +991,41 @@ const scenarios = {
     return shot;
   },
 
+  async 'living room: coming back to a remembered dig site among several tables says so'(browser, base) {
+    // With several tables the panel used to say "Table 1 of 4" and never "Your dig site is back".
+    await openApp(browser, base, 'emulate=1&env=living_room');
+    await enterAR(browser);
+    const anchored = /^\[memory\] anchored the dig site \(/;
+    const before = countDebugLog(anchored);
+    await browser.evaluate(`(async () => {
+      const left = window.__iwer.xrDevice.controllers.left;
+      left.updateAxes('thumbstick', 0, -1);
+      await new Promise((r) => setTimeout(r, 400));
+      left.updateAxes('thumbstick', 0, 0);
+      await new Promise((r) => setTimeout(r, 1500)); // stopped, and saved
+    })()`);
+    const end = Date.now() + 8000;
+    while (countDebugLog(anchored) === before && Date.now() < end) await sleep(200);
+    if (countDebugLog(anchored) === before) throw new Error('driving didn\'t anchor the dig site');
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+
+    await openApp(browser, base, 'emulate=1&env=living_room', { remember: true });
+    await enterAR(browser);
+    await browser.waitFor('window.__app.snapshot().memory.restored', { timeout: 5000, label: 'restored' });
+    let s = await snapshot(browser);
+    if (!s.panel?.startsWith('Your dig site is back') || !s.panel.includes('Pull the trigger or pinch for the next table.')) {
+      throw new Error(`panel after coming back: ${JSON.stringify(s.panel)}`);
+    }
+    // Another table starts afresh, and the panel counts tables again.
+    s = await pressTrigger(browser);
+    if (s.memory.restored || !s.panel?.startsWith('Table 2 of 4')) throw new Error(`panel on the next table: ${JSON.stringify(s.panel)}`);
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    assertNoProblems(browser);
+    return s.panel.split('\n')[0];
+  },
+
   async 'other rooms: dig site stands on a table top'(browser, base) {
     const results = [];
     for (const env of ['office_small', 'office_large', 'music_room']) {

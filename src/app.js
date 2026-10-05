@@ -512,6 +512,7 @@ export function initApp() {
   // The dig site as it was built: the excavator parked with its arm at rest, the rocks in
   // their pile and the worker where he stood.
   function resetSite() {
+    run.restored = false; // whatever was put back is gone now
     run.drive = parkedAt(excavatorHome);
     run.digTime = 0;
     run.lastPhase = digPose(0).phase;
@@ -761,14 +762,13 @@ export function initApp() {
         if (run.seenAt === null) lines.push(directionHint(siteCentre(table.top)));
         lines.push('Left stick drives, right stick swings the cab.');
         lines.push('Hold A to dig, B to repaint.');
+        if (run.restored) lines.push('As you left it. Reset on the menu starts afresh.');
+        if (count > 1) lines.push('Pull the trigger or pinch for the next table.');
+        // Coming back to a remembered site says so, however many tables there are.
+        if (run.restored) return { title: 'Your dig site is back', lines };
         if (count > 1) {
-          lines.push('Pull the trigger or pinch for the next table.');
           const index = tracker.indexOf(run.candidates, run.viewer) + 1;
           return { title: `Table ${index} of ${count}`, lines };
-        }
-        if (run.restored) {
-          lines.push('As you left it. Reset on the menu starts afresh.');
-          return { title: 'Your dig site is back', lines };
         }
         if (run.seenAt !== null) lines.push('It starts at the centre of your table.');
         return { title: 'Excavator placed', lines };
