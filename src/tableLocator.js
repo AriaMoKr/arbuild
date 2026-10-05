@@ -221,6 +221,30 @@ export function quarterTurnToward(viewer, center, yaw) {
   return (((quarters % 4) + 4) % 4) * (Math.PI / 2);
 }
 
+/** `angle` rounded to a quarter turn, as 0, π/2, π or 3π/2. */
+export function snapQuarterTurn(angle) {
+  const quarters = Math.round(angle / (Math.PI / 2));
+  return (((quarters % 4) + 4) % 4) * (Math.PI / 2);
+}
+
+/**
+ * The candidate a remembered dig site stood on: the table whose top centre is nearest
+ * to `point` ({ x, y, z }), within 30 cm horizontally and 10 cm in height (a little
+ * looser than sameTable, since Space Setup can be redone between sessions), or null.
+ */
+export function findRemembered(candidates, point) {
+  let best = null;
+  let bestDistance = Infinity;
+  for (const c of candidates) {
+    const distance = Math.hypot(c.top.center.x - point.x, c.top.center.z - point.z);
+    if (distance < 0.3 && Math.abs(c.top.center.y - point.y) < 0.1 && distance < bestDistance) {
+      best = c;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
 /** True when `point` is within VIEW_HALF_ANGLE of where the viewer is facing (horizontally). */
 export function isInView(point, viewer) {
   const bearing = bearingTo(point, viewer);
@@ -376,7 +400,7 @@ export class TableTracker {
     return recovery;
   }
 
-  /** The user took control (slid or spun the site): keep this table even if more tables arrive. */
+  /** The user took control (drove, swung or dug): keep this table even if more tables arrive. */
   confirm() {
     this.provisional = false;
   }
@@ -395,6 +419,22 @@ export class TableTracker {
     this.reason = 'user';
     if (!this.origin && viewer) this.origin = { x: viewer.x, z: viewer.z };
     return chosen;
+  }
+
+  /**
+   * Lock onto `candidate` as a firm choice (the remembered table), with `reason`, unless
+   * it's already locked that way. Returns it.
+   */
+  lockTo(candidate, viewer, reason) {
+    if (this.lockedKey === candidate.key && !this.provisional && this.reason === reason) return candidate;
+    this.lockedKey = candidate.key;
+    this.lockId++;
+    this.lastLocked = candidate;
+    this.missingSince = null;
+    this.provisional = false;
+    this.reason = reason;
+    this.origin = viewer ? { x: viewer.x, z: viewer.z } : null;
+    return candidate;
   }
 
   /** 0-based position of the locked table in the cycle order (outward from the lock origin), or -1. */

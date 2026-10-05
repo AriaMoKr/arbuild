@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 
 // A small in-AR menu above the left controller (or the left hand): Exit AR, Reload page,
-// Sound on/off, Steering relative/absolute, and when the app last changed. Point at it with
+// Sound on/off, Steering relative/absolute, Reset (the dig site as it started), and when
+// the app last changed. Point at it with
 // the other hand's controller (or pinch ray); a ray shows where you're pointing, and the
 // trigger or a pinch presses the button. The browser's own controls are out of reach in AR,
 // which is why this exists.
@@ -20,7 +21,8 @@ export const MENU_BUTTONS = [
   { id: 'exit', label: 'Exit AR', x: 24, y: 24, w: 188, h: 120 },
   { id: 'reload', label: '↻ Reload', x: 226, y: 24, w: 188, h: 120 },
   { id: 'sound', label: 'Sound', x: 428, y: 24, w: 188, h: 120 },
-  { id: 'steering', label: 'Steering', x: 24, y: 160, w: 592, h: 100 },
+  { id: 'steering', label: 'Steering', x: 24, y: 160, w: 390, h: 100 },
+  { id: 'reset', label: '↺ Reset', x: 428, y: 160, w: 188, h: 100 },
 ];
 
 /**
@@ -34,20 +36,19 @@ export function buttonAt(u, v, buttons = MENU_BUTTONS) {
 }
 
 export class XrMenu {
-  constructor({ onExit, onReload, onSound, onSteering }) {
-    this.actions = { exit: onExit, reload: onReload, sound: onSound, steering: onSteering };
+  constructor({ onExit, onReload, onSound, onSteering, onReset }) {
+    this.actions = { exit: onExit, reload: onReload, sound: onSound, steering: onSteering, reset: onReset };
     this.labels = {};
     this.version = '';
     this.hovered = null;
     this.holder = null; // 'left controller' | 'left hand' while visible
 
+    // The panel (background and version line) and each button have their own canvas, so a
+    // hover or label change re-uploads only that button's small texture.
     this.canvas = document.createElement('canvas');
     this.canvas.width = CANVAS_W;
     this.canvas.height = CANVAS_H;
-    this.texture = new THREE.CanvasTexture(this.canvas);
-    this.texture.colorSpace = THREE.SRGBColorSpace;
-    this.texture.generateMipmaps = false; // re-uploaded on every hover change; always seen up close
-    this.texture.minFilter = THREE.LinearFilter;
+    this.texture = canvasTexture(this.canvas);
 
     this.group = new THREE.Group();
     this.group.visible = false;
@@ -56,6 +57,23 @@ export class XrMenu {
       new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, toneMapped: false }),
     );
     this.group.add(this.panel);
+    this.buttons = new Map();
+    const metresPerPixel = MENU_WIDTH_M / CANVAS_W;
+    for (const b of MENU_BUTTONS) {
+      const canvas = document.createElement('canvas');
+      canvas.width = b.w;
+      canvas.height = b.h;
+      const texture = canvasTexture(canvas);
+      const mesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(b.w * metresPerPixel, b.h * metresPerPixel),
+        new THREE.MeshBasicMaterial({ map: texture, transparent: true, toneMapped: false }),
+      );
+      // On the panel at the button's place, a hair in front, drawn after it. Raycasts hit the panel.
+      mesh.position.set((b.x + b.w / 2 - CANVAS_W / 2) * metresPerPixel, (CANVAS_H / 2 - b.y - b.h / 2) * metresPerPixel, 0.0005);
+      mesh.renderOrder = 1;
+      this.group.add(mesh);
+      this.buttons.set(b.id, { button: b, canvas, texture });
+    }
 
     // The pointing ray: a thin cylinder from the pointer to where it meets the menu.
     this.ray = new THREE.Mesh(
@@ -82,14 +100,14 @@ export class XrMenu {
 
   setVersion(text) {
     this.version = text;
-    this.draw();
+    this._drawPanel();
   }
 
   /** Changes a button's label, e.g. setLabel('sound', 'Sound off'). */
   setLabel(id, label) {
     if (this.labels[id] === label) return;
     this.labels[id] = label;
-    this.draw();
+    this._drawButton(id);
   }
 
   /** Called once per XR frame: places the menu on the holding hand and tracks the pointer. */
@@ -202,33 +220,54 @@ export class XrMenu {
 
   _setHover(id) {
     if (id === this.hovered) return;
+    const before = this.hovered;
     this.hovered = id;
-    this.draw();
+    if (before) this._drawButton(before);
+    if (id) this._drawButton(id);
   }
 
+  /** Draws everything: the panel and every button. */
   draw() {
+    this._drawPanel();
+    for (const id of this.buttons.keys()) this._drawButton(id);
+  }
+
+  _drawPanel() {
     const g = this.canvas.getContext('2d');
     g.clearRect(0, 0, CANVAS_W, CANVAS_H);
     g.fillStyle = 'rgba(16, 18, 24, 0.85)';
     g.beginPath();
     g.roundRect(0, 0, CANVAS_W, CANVAS_H, 28);
     g.fill();
-
     g.textAlign = 'center';
     g.textBaseline = 'middle';
-    for (const b of MENU_BUTTONS) {
-      g.fillStyle = b.id === this.hovered ? '#5a8fff' : '#2c3342';
-      g.beginPath();
-      g.roundRect(b.x, b.y, b.w, b.h, 20);
-      g.fill();
-      g.fillStyle = '#ffffff';
-      g.font = `600 38px ${FONT}`;
-      g.fillText(this.labels[b.id] ?? b.label, b.x + b.w / 2, b.y + b.h / 2, b.w - 20);
-    }
-
     g.fillStyle = '#c9d1e0';
     g.font = `400 30px ${FONT}`;
     g.fillText(this.version || 'Updated: unknown', CANVAS_W / 2, VERSION_Y, CANVAS_W - 48);
     this.texture.needsUpdate = true;
   }
+
+  _drawButton(id) {
+    const { button: b, canvas, texture } = this.buttons.get(id);
+    const g = canvas.getContext('2d');
+    g.clearRect(0, 0, b.w, b.h);
+    g.fillStyle = id === this.hovered ? '#5a8fff' : '#2c3342';
+    g.beginPath();
+    g.roundRect(0, 0, b.w, b.h, 20);
+    g.fill();
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillStyle = '#ffffff';
+    g.font = `600 38px ${FONT}`;
+    g.fillText(this.labels[id] ?? b.label, b.w / 2, b.h / 2, b.w - 20);
+    texture.needsUpdate = true;
+  }
+}
+
+function canvasTexture(canvas) {
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.generateMipmaps = false; // re-uploaded on changes; always seen up close
+  texture.minFilter = THREE.LinearFilter;
+  return texture;
 }

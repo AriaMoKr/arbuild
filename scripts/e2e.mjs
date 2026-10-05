@@ -161,6 +161,10 @@ async function connect(profile, proc, shutdown) {
       problems.length = 0;
       await send('Page.navigate', { url });
     },
+    /** Forgets what pages from `origin` saved: the remembered dig site, steering, paint, IWER's anchors. */
+    async clearStorage(origin) {
+      await send('Storage.clearDataForOrigin', { origin, storageTypes: 'local_storage' });
+    },
     async waitFor(expression, { timeout = 15000, label = expression } = {}) {
       const end = Date.now() + timeout;
       let last;
@@ -251,7 +255,13 @@ async function shownFraction(browser) {
   return shown / all;
 }
 
-async function openApp(browser, base, query) {
+/** Opens the app afresh: nothing remembered from earlier scenarios, unless `remember`. */
+async function openApp(browser, base, query, { remember = false } = {}) {
+  if (!remember) {
+    await browser.goto('about:blank'); // the last page may still save as it unloads
+    await sleep(100);
+    await browser.clearStorage(new URL(base).origin);
+  }
   await browser.goto(`${base}?${query}`);
   await browser.waitFor('window.__app && !document.getElementById("enter-ar").disabled', { label: 'Enter AR button ready' });
 }
@@ -588,7 +598,7 @@ const scenarios = {
     return `ahead ${f.along.toFixed(3)} m, turned ${turn.toFixed(2)} rad, stopped at the rocks and ${gap.toFixed(3)} m from the edge; absolute drove ${drove.toFixed(2)} m; ${shot}`;
   },
 
-  async 'meeting room: holding A digs and letting go stops the arm; sound, and the menu mutes it'(browser, base) {
+  async 'meeting room: holding A digs and moves rocks, letting go stops the arm; sound, and the menu mutes it'(browser, base) {
     await openApp(browser, base, 'emulate=1&env=meeting_room');
     await enterAR(browser);
     // Look down at the dig site from close by, so the screenshots show the arm.
@@ -636,6 +646,32 @@ const scenarios = {
       throw new Error(`the arm kept moving after A was released: ${released.excavator.digTime} -> ${later.excavator.digTime}`);
     }
     if (!(released.excavator.digTime > 6.5)) throw new Error(`dig time ${released.excavator.digTime} after ~7.7 s of holding A`);
+    // The first cycle scooped a rock out of the pile and dumped it, back over the pile (no swing).
+    if (!(released.rocks.moved >= 1)) throw new Error(`a whole dig cycle moved no rock: ${JSON.stringify(released.rocks)}`);
+
+    // Scoop, let go of A once the rock is up, swing the cab away, then dig on to dump it:
+    // it lands over there. The second cycle's scoop has started.
+    const until = async (phase) => {
+      await browser.evaluate(`${right}.updateButtonValue('a-button', 1)`);
+      await browser.waitFor(`window.__app.snapshot().site.digPhase === '${phase}'`, { timeout: 7000, label: `dig phase ${phase}` });
+      await sleep(300);
+      await browser.evaluate(`${right}.updateButtonValue('a-button', 0)`);
+      await sleep(100);
+    };
+    await until('lift');
+    const s1 = await snapshot(browser);
+    const index = s1.rocks.state.findIndex((r) => r.carried);
+    if (index < 0) throw new Error('the second scoop picked no rock up');
+    await browser.evaluate(`(async () => { ${right}.updateAxes('thumbstick', 1, 0); await new Promise((r) => setTimeout(r, 1500)); ${right}.updateAxes('thumbstick', 0, 0); await new Promise((r) => setTimeout(r, 500)); })()`);
+    await until('return');
+    await browser.waitFor('!window.__app.snapshot().rocks.busy', { timeout: 3000, label: 'the dumped rock landed' });
+    const s2 = await snapshot(browser);
+    const landed = s2.rocks.state[index];
+    const pile = { x: -380, z: 55 }; // where the rocks started (model frame, design units)
+    const away = Math.hypot(landed.x - pile.x, landed.z - pile.z);
+    if (landed.carried || !(away > 150)) throw new Error(`the swung, dumped rock lies ${away.toFixed(0)} units from the pile: ${JSON.stringify(landed)}`);
+    if (!(landed.y > 0)) throw new Error(`the dumped rock is at height ${landed.y}`);
+    shots.push(await browser.screenshot('dig-swung-and-dumped'));
 
     // The audio runs (headless Chrome is started with autoplay allowed) but is off by default;
     // the menu's Sound button turns it on and off again.
@@ -659,6 +695,131 @@ const scenarios = {
     await browser.waitFor(`window.__app.snapshot().sound.state === 'suspended'`, { timeout: 3000, label: 'audio suspended after AR' });
     assertNoProblems(browser);
     return `${seen.join(' → ')}; ${shots.join(', ')}`;
+  },
+
+  async 'meeting room: the worker gets out of the way of the swinging arm'(browser, base) {
+    await openApp(browser, base, 'emulate=1&env=meeting_room');
+    const start = await enterAR(browser);
+    if (start.worker.walking) throw new Error('the worker walks off with nothing coming');
+    const right = 'window.__iwer.xrDevice.controllers.right';
+    // Swing the cab left (anticlockwise) for 3 s: the arm sweeps round over where he stands.
+    await browser.evaluate(`${right}.updateAxes('thumbstick', -1, 0)`);
+    let closest = Infinity;
+    let walked = false;
+    const end = Date.now() + 3000;
+    while (Date.now() < end) {
+      const s = await snapshot(browser);
+      closest = Math.min(closest, s.worker.armGap);
+      walked ||= s.worker.walking;
+      await sleep(50);
+    }
+    await browser.evaluate(`${right}.updateAxes('thumbstick', 0, 0)`);
+    await browser.waitFor('!window.__app.snapshot().worker.walking', { timeout: 5000, label: 'the worker stopped walking' });
+    const after = await snapshot(browser);
+    if (!walked) throw new Error('the worker never moved');
+    if (closest < -0.005) throw new Error(`the arm went ${(-closest * 1000).toFixed(0)} mm into the worker`);
+    const moved = Math.hypot(after.worker.x - start.worker.x, after.worker.z - start.worker.z);
+    if (!(moved > 50)) throw new Error(`the worker only moved ${moved.toFixed(0)} units`);
+    assertOnMeetingTable(after.site, 'after he moved');
+    await browser.evaluate(`(() => {
+      const d = window.__iwer.xrDevice;
+      d.position.set(0.069, 1.25, -0.95);
+      const pitch = -40 * Math.PI / 180;
+      d.quaternion.set(Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2));
+    })()`);
+    await sleep(800);
+    const shot = await browser.screenshot('worker-out-of-the-way');
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    assertNoProblems(browser);
+    return `closest the arm came: ${(closest * 1000).toFixed(0)} mm; he moved ${(moved * 0.5).toFixed(0)} mm; ${shot}`;
+  },
+
+  async 'meeting room: the dig site is remembered, through a long dropout and a reload; Reset starts afresh'(browser, base) {
+    await openApp(browser, base, 'emulate=1&env=meeting_room');
+    let s = await enterAR(browser);
+    if (!s.enabledFeatures.includes('anchors')) throw new Error('the anchors feature is off');
+    if (s.memory.restored) throw new Error('restored something on a first visit');
+    const left = 'window.__iwer.xrDevice.controllers.left';
+    const right = 'window.__iwer.xrDevice.controllers.right';
+    const hold = (controller, action, ms) =>
+      browser.evaluate(`(async () => { ${controller}.${action[0]}(...${JSON.stringify(action[1])}); await new Promise((r) => setTimeout(r, ${ms})); ${controller}.${action[0]}(...${JSON.stringify(action[2])}); await new Promise((r) => setTimeout(r, 500)); })()`);
+
+    // Make it the user's own: drive, dig a whole cycle (a rock moves), swing, repaint.
+    await hold(left, ['updateAxes', ['thumbstick', 0, -1], ['thumbstick', 0, 0]], 600);
+    await hold(right, ['updateButtonValue', ['a-button', 1], ['a-button', 0]], 6300);
+    await hold(right, ['updateAxes', ['thumbstick', 1, 0], ['thumbstick', 0, 0]], 500);
+    await hold(right, ['updateButtonValue', ['b-button', 1], ['b-button', 0]], 600);
+    await waitForDebugLog(/^\[memory\] anchored the dig site \(/);
+    await waitForDebugLog(/^\[memory\] saved the dig site$/);
+    await browser.waitFor('!window.__app.snapshot().rocks.busy && !window.__app.snapshot().worker.walking', { timeout: 5000, label: 'all still' });
+    const made = await snapshot(browser);
+    if (!(made.rocks.moved >= 1) || made.excavator.atHome) throw new Error(`nothing changed: ${JSON.stringify(made.excavator)}`);
+
+    const same = (a, b, label) => {
+      assertNear(a.excavator.position, b.excavator.position, `${label}: excavator`);
+      const turned = (x, y) => Math.abs(Math.atan2(Math.sin(x - y), Math.cos(x - y)));
+      if (turned(a.excavator.heading, b.excavator.heading) > 0.01) throw new Error(`${label}: heading ${b.excavator.heading} != ${a.excavator.heading}`);
+      if (turned(a.excavator.swing, b.excavator.swing) > 0.01) throw new Error(`${label}: swing ${b.excavator.swing} != ${a.excavator.swing}`);
+      if (Math.abs((a.excavator.digTime % 6) - (b.excavator.digTime % 6)) > 0.01) throw new Error(`${label}: dig time ${b.excavator.digTime} != ${a.excavator.digTime}`);
+      a.rocks.state.forEach((r, i) => {
+        const q = b.rocks.state[i];
+        if (Boolean(r.carried) !== Boolean(q.carried) || (!r.carried && Math.hypot(r.x - q.x, r.y - q.y, r.z - q.z) > 1)) {
+          throw new Error(`${label}: rock ${i} ${JSON.stringify(q)}, was ${JSON.stringify(r)}`);
+        }
+      });
+      if (Math.hypot(a.worker.x - b.worker.x, a.worker.z - b.worker.z) > 1) throw new Error(`${label}: the worker moved`);
+      if (a.site.color !== b.site.color) throw new Error(`${label}: colour ${b.site.color} != ${a.site.color}`);
+      if (Math.abs(a.site.spin - b.site.spin) > 1e-6) throw new Error(`${label}: the site turned`);
+    };
+
+    // A long dropout (as when the headset is taken off): 2.5 s without the table, well past
+    // the 1 s grace. The table comes back as the remembered one, with everything as it was.
+    await browser.evaluate(`(() => {
+      const sem = window.__iwer.xrDevice.sem;
+      const table = (e) => e.semanticLabel === 'table';
+      window.__dropped = { planes: [...sem.trackedPlanes].filter(table), meshes: [...sem.trackedMeshes].filter(table) };
+      for (const e of window.__dropped.planes) sem.trackedPlanes.delete(e);
+      for (const e of window.__dropped.meshes) sem.trackedMeshes.delete(e);
+    })()`);
+    await browser.waitFor('!window.__app.snapshot().site.visible', { timeout: 3000, label: 'the site gone with its table' });
+    await sleep(1500);
+    await browser.evaluate(`(() => {
+      const sem = window.__iwer.xrDevice.sem;
+      for (const e of window.__dropped.planes) sem.trackedPlanes.add(e);
+      for (const e of window.__dropped.meshes) sem.trackedMeshes.add(e);
+    })()`);
+    await browser.waitFor('window.__app.snapshot().site.visible', { timeout: 3000, label: 'the site back' });
+    const back = await snapshot(browser);
+    if (back.pick.reason !== 'remembered') throw new Error(`after the long dropout the table was picked as "${back.pick.reason}"`);
+    same(made, back, 'after the long dropout');
+    await waitForDebugLog(/^\[tables\] remembered: table 1 of 1/);
+
+    // Leave, reload the page and come back: the dig site is put back as it was.
+    const left_ = await snapshot(browser);
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    await openApp(browser, base, 'emulate=1&env=meeting_room', { remember: true });
+    await enterAR(browser);
+    await waitForDebugLog(/^\[memory\] found the saved dig site from /);
+    await waitForDebugLog(/^\[memory\] put the dig site back as it was$/);
+    const restored = await snapshot(browser);
+    if (!restored.memory.restored || restored.pick.reason !== 'remembered') throw new Error(`not restored: ${JSON.stringify(restored.memory)}, ${restored.pick.reason}`);
+    same(left_, restored, 'after the reload');
+    if (!restored.panel?.startsWith('Your dig site is back')) throw new Error(`panel: ${restored.panel}`);
+    const shot = await browser.screenshot('remembered-after-reload');
+
+    // Reset on the menu: back to how it started, on the same table.
+    await browser.evaluate(`(() => { const d = window.__iwer.xrDevice; d.position.set(0, 1.6, 0); d.quaternion.set(0, 0, 0, 1); })()`);
+    await sleep(300);
+    await aimAtMenuButton(browser, 'reset');
+    await clickTrigger(browser);
+    await browser.waitFor('window.__app.snapshot().excavator.atHome && window.__app.snapshot().rocks.moved === 0', { timeout: 3000, label: 'reset' });
+    await waitForDebugLog(/^\[memory\] the dig site was reset$/);
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    assertNoProblems(browser);
+    return `${made.rocks.moved} rock(s) moved, excavator at ${made.excavator.onTable.x.toFixed(3)}, ${made.excavator.onTable.z.toFixed(3)} m: kept through the dropout and the reload; ${shot}`;
   },
 
   async 'meeting room: depth sensing hides the dig site behind real things'(browser, base) {

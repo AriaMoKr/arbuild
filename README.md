@@ -1,6 +1,6 @@
 # Table Cube
 
-A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres. It's about 42 × 20 cm, and shrinks to fit smaller tables. You drive the excavator round the table top, swing its cab and dig with it (reach into the pile, scoop, lift, dump), with engine, hydraulic and rock sounds coming from it (off until you turn them on from the menu). On Quest 3 your hands and real objects in front of it hide it, using the headset's depth sensing. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
+A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres. It's about 42 × 20 cm, and shrinks to fit smaller tables. You drive the excavator round the table top, swing its cab and dig with it: it scoops rocks out of the pile and dumps them wherever you swing or drive it, while the worker keeps out of its way. Engine, hydraulic and rock sounds come from it (off until you turn them on from the menu). The app remembers your dig site, table and all, for next time. On Quest 3 your hands and real objects in front of it hide it, using the headset's depth sensing. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
 
 ## Requirements
 
@@ -41,7 +41,7 @@ The app uses the room model from Space Setup, not live camera detection. In the 
 
 ## Using the app
 
-The dig site goes on the nearest table, preferring one in front of you when it's about as close (a table you're not facing counts as 1.5 m further away). While the room's tables are still arriving at the start of a session the app keeps re-picking, until you choose a table yourself or start driving or digging. It lines up with the table's edges and is turned to face you. Until you've looked at it, the panel tells you which way to turn.
+The dig site goes on the nearest table, preferring one in front of you when it's about as close (a table you're not facing counts as 1.5 m further away). While the room's tables are still arriving at the start of a session the app keeps re-picking, until you choose a table yourself or start driving or digging. If you've been here before, it goes back on the table you left it on. It lines up with the table's edges and is turned to face you. Until you've looked at it, the panel tells you which way to turn.
 
 | You see | What to do |
 | --- | --- |
@@ -51,10 +51,12 @@ The dig site goes on the nearest table, preferring one in front of you when it's
 | "Spatial data is blocked" | Exit AR and tap the site-info icon at the left of the address bar. On a normal HTTPS site it's a lock; on the dev server it's a **Not secure** warning. Set spatial data to **Allow**, and reload. |
 | Left thumbstick | Drives the excavator. It only ever drives forwards or backwards along the way it faces, like a real one: it speeds up and slows down smoothly, and stops at the table's edge (its arm may reach over) and when it bumps into the worker or the rocks. How the stick steers is set by **Steering** on the menu: **relative** (the default) means forward/back drives and left/right turns it on the spot, wherever you stand; **absolute** means push the way you want it to go, as you see it, and it turns to face that way and drives there. Moving to another table parks it back where it started. |
 | Right thumbstick | Swings the cab (with the operator and the arm) round on the wheels: right swings it clockwise, left anticlockwise. |
-| Hold **A** | The arm digs while you hold it: reach, scoop, lift, dump and back. Let go and it stops where it is. |
+| Hold **A** | The arm digs while you hold it: reach, scoop, lift, dump and back. Let go and it stops where it is. A scoop picks up the top rock near the bucket's teeth, and the dump drops it under the bucket, onto the table or onto other rocks. To move a rock somewhere else, let go of A once the bucket has lifted, swing the cab or drive, then hold A again to dump it there. |
 | Hold **B** | The excavator's paint cycles through colours while you hold it, and keeps the colour it reached when you let go. |
+| The worker | He watches the excavator, and walks out of the way when its arm swings or reaches towards him, or when it drives at him. |
+| Coming back later | The dig site is remembered: the table it's on, the excavator's place, its arm and paint, the rocks and the worker. Next time it comes back as you left it (the panel says "Your dig site is back"), also after you've taken the headset off for a while. **↺ Reset** on the menu starts afresh; choosing another table does too. |
 | **Sound off / Sound on** on the menu | Turns the dig site's sound on or off. It starts off, and your choice is remembered in this browser. |
-| The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload** reloads the app, **Sound** turns the sound on or off, **Steering** switches between relative and absolute steering (remembered too). Reload is handy after a code change, since the browser's own controls are out of reach in AR. Its bottom line shows when the app's files last changed ("Updated …"), the same as under the title on the page, so you can tell whether the headset is running the latest version. |
+| The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload** reloads the app, **Sound** turns the sound on or off, **Steering** switches between relative and absolute steering (remembered too), **↺ Reset** puts the dig site back as it started. Reload is handy after a code change, since the browser's own controls are out of reach in AR. Its bottom line shows when the app's files last changed ("Updated …"), the same as under the title on the page, so you can tell whether the headset is running the latest version. |
 | Pinch does nothing | Use a controller trigger, or allow hand tracking from the same site-info icon and reload. |
 
 To leave AR, use **Exit AR** on the menu above your left hand, or press the Meta button: Quest Browser shows controls near the address bar to resume or quit the immersive session. If something prevented the dig site from appearing, the page repeats what to fix after you leave AR.
@@ -74,7 +76,7 @@ Query parameters (dev server only):
 
 ### Debug log
 
-In dev builds, the page sends its console output, uncaught errors and a snapshot of the app's state back to the dev server, which appends them to `logs/quest-debug.jsonl` (one JSON object per line). That works from the headset too, with no USB cable. The snapshot covers detected tables, placement, frame rate and controllers, and is sent whenever something changes and every 10 s during AR. Errors and warnings from the page are also printed in the `npm run dev` terminal. It also records which table was picked and why, and when a table that briefly dropped out came back (`[tables] …`), every menu button press (`[menu] …`), how long the shaders took to compile before AR (`[shaders] …`), the frame timing of each session's first 3 seconds (`[startup] …`), whether depth sensing started and the depth map's size and near/far planes (`[depth] …`), and when the session's visibility changes, for example when the headset is taken off (`[session] …`). Add `?debug=0` to the URL to turn it off. None of this is in `npm run build`.
+In dev builds, the page sends its console output, uncaught errors and a snapshot of the app's state back to the dev server, which appends them to `logs/quest-debug.jsonl` (one JSON object per line). That works from the headset too, with no USB cable. The snapshot covers detected tables, placement, frame rate and controllers, and is sent whenever something changes and every 10 s during AR. Errors and warnings from the page are also printed in the `npm run dev` terminal. It also records which table was picked and why, and when a table that briefly dropped out came back (`[tables] …`), every menu button press (`[menu] …`), how long the shaders took to compile before AR (`[shaders] …`), the frame timing of each session's first 3 seconds (`[startup] …`), whether depth sensing started and the depth map's size and near/far planes (`[depth] …`), the remembered dig site being anchored, saved, found and put back (`[memory] …`), steering changes (`[drive] …`), and when the session's visibility changes, for example when the headset is taken off (`[session] …`). Add `?debug=0` to the URL to turn it off. None of this is in `npm run build`.
 
 Tests:
 
@@ -92,7 +94,8 @@ npm run test:e2e  # headless Chrome + emulator: checks the dig site lands on the
 3. **Centre of the table.** The table top's polygon is in plane space. The app takes its area-weighted centroid and transforms it into the reference space. It never trusts the direction of the plane's normal: on Quest the table plane's +Y axis points *down*, so the dig site is lifted along the reference space's up axis. Only the plane's yaw is copied, so the site lines up with the table edges.
 4. **Which table.** The app picks the nearest table, counting tables outside your view 1.5 m further away, then stays locked on that `XRPlane` object, so the dig site doesn't jump when you walk around. Quest delivers the room's tables over the first frames, so that first pick is provisional: it's made again whenever a new table arrives, until you press the trigger, slide or spin. If the table briefly drops out of the scene data, the site stays where it is for up to a second, and a table that comes back in the same place is treated as the same one, so your slide, spin and choice of table are kept. Trigger or pinch cycles through the tables, ordered by distance from where you stood when the table was picked.
 5. **Occlusion.** The session also asks for `depth-sensing` (optional, `gpu-optimized`), so real things in front of the dig site, like your hands, hide it. The dig site's own shaders do it ([src/occlusion.js](src/occlusion.js)) instead of three.js's built-in pass, whose hard edges looked blocky round hands and flickered where the site touches the table. Each pixel averages 9 depth samples for soft edges, and a real surface only starts hiding the site once it's 2 cm in front of it (fully hidden at 5 cm), so the table's noisy depth never eats the rubble or the shadows.
-6. **Messages.** Quest Browser has no DOM overlay in AR, so status text is drawn on a canvas panel that follows your head.
+6. **Remembering the dig site.** The session also asks for `anchors` (optional). Once you've chosen the site (by driving, digging or picking a table), the app makes a persistent spatial anchor where it stands and saves what's on it in `localStorage` with the anchor's ID ([src/placementMemory.js](src/placementMemory.js)). Next session it restores the anchor, puts the site on the table under it, turned as before, and puts everything back.
+7. **Messages.** Quest Browser has no DOM overlay in AR, so status text is drawn on a canvas panel that follows your head.
 
 The geometry and selection logic lives in [src/tableLocator.js](src/tableLocator.js) and has no three.js or browser dependency.
 
@@ -108,11 +111,14 @@ src/main.js             entry point; loads the emulator in dev when needed
 src/app.js              renderer, AR session, per-frame table tracking, dig site placement
 src/digSite.js          the dig site: excavator, operator, worker and rocks from boxes, cylinders and spheres, and its dig cycle
 src/excavatorDrive.js   driving and swinging the excavator from the thumbsticks (pure, unit-tested)
+src/rocks.js            the rocks, one by one: scooped, carried, dumped, falling and stacking
+src/worker.js           the worker watching the excavator and keeping out of its way (pure, unit-tested)
+src/placementMemory.js  remembering the dig site between sessions with a persistent anchor
 src/siteSound.js        engine, hydraulics and rock sounds, made with WebAudio and placed at the excavator
 src/occlusion.js        soft depth occlusion added to the dig site's materials
 src/tableLocator.js     table detection maths and table selection (pure, unit-tested)
 src/statusPanel.js      in-headset text panel
-src/xrMenu.js           in-AR menu above the left hand: Exit AR, Reload page, Sound, Steering, "Updated …"
+src/xrMenu.js           in-AR menu above the left hand: Exit AR, Reload page, Sound, Steering, Reset, "Updated …"
 src/frameTrace.js       times each frame of a session's first seconds, for the debug log
 src/version.js          fetches ./__version.json, when the app's files last changed
 src/emulation.js        dev-only Quest 3 emulator setup (IWER + synthetic rooms)

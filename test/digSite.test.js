@@ -56,8 +56,9 @@ test('animate poses the arm by dig time, separately from the clock', () => {
 test('driving data: the excavator starts clear of the worker and the rocks, with room round its body', () => {
   // The body circle holds the wheels and the house however it turns, but not the arm.
   assert.ok(site.bodyRadius > 180 && site.bodyRadius < 240, `body radius ${site.bodyRadius} units`);
-  assert.equal(site.obstacles.length, 2);
-  for (const o of site.obstacles) {
+  const obstacles = [...site.rocks.obstacles(), { x: site.workerHome.x, z: site.workerHome.z, r: site.workerRadius }];
+  assert.equal(obstacles.length, 6); // five rocks and the worker
+  for (const o of obstacles) {
     const gap = Math.hypot(site.home.x - o.x, site.home.z - o.z) - site.bodyRadius - o.r;
     assert.ok(gap > 20, `only ${gap.toFixed(0)} units between the excavator and an obstacle at home`);
   }
@@ -80,4 +81,26 @@ test('setDrive moves and turns the chassis, swings the house, and rolls the whee
   assert.equal(wheels.length, 4);
   for (const w of wheels) assert.ok(Math.abs(w.rotation.z - 2) < 1e-9, `wheel turned ${w.rotation.z}`);
   site.setDrive({ ...site.home, swing: 0, travel: 0 });
+});
+
+test('from home, the teeth reach the rock pile at the end of the reach, and dump in the same place', () => {
+  site.animate(0, 1.4);
+  const reach = site.teeth();
+  site.animate(0, 4.6);
+  const dump = site.teeth();
+  site.animate(0);
+  const nearest = Math.min(...site.rocks.obstacles().map((o) => Math.hypot(o.x - reach.x, o.z - reach.z)));
+  assert.ok(nearest < 90, `the nearest rock is ${nearest.toFixed(0)} units from the teeth`);
+  assert.ok(Math.hypot(dump.x - reach.x, dump.z - reach.z) < 30, 'without a swing, the dump is over the pile');
+  assert.ok(dump.y > reach.y + 50, 'the bucket dumps from up high');
+});
+
+test('the arm points run from the elbow to the teeth, and the worker can be posed walking', () => {
+  const points = site.armPoints();
+  assert.equal(points.length, 7);
+  const teeth = site.teeth();
+  assert.deepEqual(points[6], teeth);
+  assert.ok(points[0].y > points[6].y, 'the elbow is above the teeth');
+  site.setWorker({ x: 0, z: 0, facing: 1, headYaw: 0.5 }, 0.4);
+  site.setWorker({ ...site.workerHome, headYaw: 0 }, 0);
 });

@@ -2,16 +2,30 @@ import * as THREE from 'three';
 import { StatusPanel } from './statusPanel.js';
 import { XrMenu } from './xrMenu.js';
 import { FrameTrace } from './frameTrace.js';
-import { SITE_UNIT, createDigSite } from './digSite.js';
+import { DIG_CYCLE_S, DIG_KEYS, SITE_UNIT, createDigSite, digPose } from './digSite.js';
 import { SoftOcclusion } from './occlusion.js';
 import { SiteSound } from './siteSound.js';
+import { PlacementMemory } from './placementMemory.js';
+import { LOOKAHEADS_S, limbSwing, nearestThreat, predictPoints, standingAt, stepWorker } from './worker.js';
 import { nextHue, readLeftStick, readRightController, viewerHeading } from './controllerInput.js';
-import { STEERING_MODES, driveLoad, forwardOf, intoFrame, outOfFrame, parkedAt, stepDrive } from './excavatorDrive.js';
+import {
+  STEERING_MODES,
+  driveLoad,
+  forwardOf,
+  intoFrame,
+  outOfFrame,
+  parkedAt,
+  settle,
+  stepDrive,
+  wrapAngle,
+} from './excavatorDrive.js';
 import {
   TableTracker,
   bearingTo,
+  findRemembered,
   isTableLabel,
   quarterTurnToward,
+  snapQuarterTurn,
   tableTopFromMesh,
   tableTopFromPlane,
   viewAngleTo,
@@ -23,12 +37,16 @@ const SCAN_GRACE_MS = 3000; // Meta: scene data can take 2-3 s to arrive after t
 const PLACED_HINT_MS = 4000; // how long the 'placed' hint stays up once the site has been seen
 const SEEN_ANGLE = (40 * Math.PI) / 180; // site within this angle of the gaze counts as seen
 const STEERING_KEY = 'tableCube.steering'; // localStorage: 'relative' (default) or 'absolute'
+const PAINT_KEY = 'tableCube.paintHue'; // localStorage: the excavator's paint hue, 0..1
+const WORKER_HEIGHT = 260; // design units: arm points higher than this pass over the worker's head
+const ARM_THREAT_RADIUS = 25; // design units round each arm point the worker keeps clear of
 
 // Scene features stay optional: if the user denies spatial data, the session still starts
 // and we can explain what's wrong instead of failing to enter AR at all.
 const SESSION_INIT = {
   requiredFeatures: [],
-  optionalFeatures: ['local-floor', 'plane-detection', 'mesh-detection', 'hand-tracking', 'depth-sensing'],
+  // 'anchors' lets the dig site be remembered between sessions (src/placementMemory.js).
+  optionalFeatures: ['local-floor', 'plane-detection', 'mesh-detection', 'hand-tracking', 'depth-sensing', 'anchors'],
   // Occlusion: gpu-optimized depth lets real things in front of the dig site (hands,
   // objects) hide it (src/occlusion.js). An empty format list lets the browser pick its
   // native format (same as three's own depth-sensing example).
@@ -85,9 +103,14 @@ export function initApp() {
     excavator,
     animate: animateSite,
     setDrive,
+    setWorker,
+    armPoints,
+    teeth,
+    rocks,
     home: excavatorHome,
     bodyRadius,
-    obstacles,
+    workerHome,
+    workerRadius,
     origin: siteOrigin,
   } = createDigSite();
   // Real things in front of the dig site hide it, softly (src/occlusion.js).
@@ -98,10 +121,17 @@ export function initApp() {
   });
   anchor.add(site);
   scene.add(anchor);
-  // Holding B on the right controller cycles the excavator's paint.
+  // Holding B on the right controller cycles the excavator's paint; the colour is remembered.
   const paintHsl = paint.color.getHSL({ h: 0, s: 0, l: 0 }, THREE.SRGBColorSpace);
+  const savedHue = loadNumber(PAINT_KEY);
+  if (savedHue !== null && savedHue >= 0 && savedHue < 1) {
+    paintHsl.h = savedHue;
+    paint.color.setHSL(paintHsl.h, paintHsl.s, paintHsl.l, THREE.SRGBColorSpace);
+  }
   // How the left stick steers (src/excavatorDrive.js), switched on the menu and remembered.
   let steering = loadSteering();
+  // The table the site was on and everything on it, kept between sessions.
+  const memory = new PlacementMemory();
 
   const panel = new StatusPanel();
   scene.add(panel.mesh);
@@ -119,9 +149,14 @@ export function initApp() {
     },
     onSteering: () => {
       steering = STEERING_MODES[(STEERING_MODES.indexOf(steering) + 1) % STEERING_MODES.length];
-      saveSteering(steering);
+      saveStorage(STEERING_KEY, steering);
       showSteeringLabel();
       console.info(`[drive] steering: ${steering}`);
+    },
+    // Back to how the dig site started, on the same table (the remembered one is replaced).
+    onReset: () => {
+      resetSite();
+      console.info('[memory] the dig site was reset');
     },
   });
   const showSoundLabel = () => menu.setLabel('sound', sound.muted ? 'Sound off' : 'Sound on');
@@ -144,6 +179,10 @@ export function initApp() {
     drive: parkedAt(excavatorHome), // where the excavator is and how it's moving (src/excavatorDrive.js)
     digTime: 0, // seconds into the dig cycle: it only runs while A is held
     digging: false,
+    lastPhase: digPose(0).phase, // the dig phase last frame: scoops and dumps happen as it changes
+    worker: standingAt(workerHome), // where the worker is and what he's doing (src/worker.js)
+    restored: false, // the site was put back as it was saved in an earlier session
+    repainting: false,
     roomCaptureUsed: false,
     state: 'idle',
     sceneObjectCount: 0,
@@ -151,6 +190,8 @@ export function initApp() {
   };
   // Frame timing over the last second, for the debug channel's snapshots.
   const frameStats = { since: null, last: null, count: 0, worstMs: 0, fps: null, worstFrameMs: null };
+
+  window.addEventListener('pagehide', () => memory.flush()); // Reload, or the browser closing
 
   window.addEventListener('resize', () => {
     if (renderer.xr.isPresenting) return; // three ignores setSize while presenting
@@ -197,7 +238,10 @@ export function initApp() {
     }
     xrSession.addEventListener('select', onSelect);
     // 'visible', 'visible-blurred' (a system menu is up) or 'hidden' (e.g. the headset is off).
-    xrSession.addEventListener('visibilitychange', () => console.info(`[session] visibility: ${xrSession.visibilityState}`));
+    xrSession.addEventListener('visibilitychange', () => {
+      console.info(`[session] visibility: ${xrSession.visibilityState}`);
+      if (xrSession.visibilityState === 'hidden') memory.flush(); // the headset may be off for good
+    });
     console.info(
       hasFeature(xrSession, 'depth-sensing') && xrSession.enabledFeatures
         ? `[depth] depth sensing on: ${xrSession.depthUsage}, ${xrSession.depthDataFormat}`
@@ -223,22 +267,25 @@ export function initApp() {
       lockId: null,
       lockedAt: 0,
       seenAt: null,
-      drive: parkedAt(excavatorHome),
-      digTime: 0,
       digging: false,
+      restored: false,
+      repainting: false,
       roomCaptureUsed: false,
       state: 'scanning',
       sceneObjectCount: 0,
       depthSince: null,
     });
+    resetSite();
     Object.assign(frameStats, { since: null, last: null, count: 0, worstMs: 0, fps: null, worstFrameMs: null });
     tracker.reset();
+    memory.start(renderer.xr.getSession(), performance.now());
     setButton('Exit AR', false);
     setStatus('AR session running.', 'info');
   });
 
   renderer.xr.addEventListener('sessionend', () => {
     const endedIn = run.state;
+    memory.end(); // saves the dig site as it is now
     // XRPlane/XRMesh objects (and their spaces) die with the session.
     tracker.reset();
     run.candidates = [];
@@ -330,7 +377,17 @@ export function initApp() {
     const { candidates, sceneObjectCount } = findTables(frame, refSpace);
     run.candidates = candidates;
     run.sceneObjectCount = sceneObjectCount;
-    const table = tracker.update(candidates, run.viewer, time); // `time` lets it ride out brief dropouts
+    const remembered = memory.locate(frame, refSpace, time);
+    let table = null;
+    // While the saved dig site's anchor is being looked for, don't put the site anywhere else.
+    if (!remembered.pending) {
+      table = tracker.update(candidates, run.viewer, time); // `time` lets it ride out brief dropouts
+      // The remembered table wins over an automatic pick, never over a table the user chose.
+      if (remembered.pose && tracker.provisional) {
+        const match = findRemembered(candidates, remembered.pose);
+        if (match) table = tracker.lockTo(match, run.viewer, 'remembered');
+      }
+    }
     const recovery = tracker.takeRecovery();
     if (recovery) {
       const how = recovery.newObject ? ' as a new object in the same place' : '';
@@ -344,11 +401,23 @@ export function initApp() {
         run.lockId = tracker.lockId;
         run.lockedAt = time;
         run.seenAt = null;
-        // A new table starts with the site at its centre, square to the table and facing
-        // the user, and the excavator parked at home with its arm at rest.
-        site.rotation.y = quarterTurnToward(run.viewer, table.top.center, table.top.yaw);
-        run.drive = parkedAt(excavatorHome);
-        run.digTime = 0;
+        if (tracker.reason === 'remembered') {
+          // The user's own dig site: turned as it was, with everything where they left it.
+          // Saved state comes from an earlier session; otherwise the site only dropped out
+          // for a while (the headset was off), and what's in hand is already right.
+          site.rotation.y = snapQuarterTurn(remembered.pose.yaw - table.top.yaw);
+          const saved = memory.takeSavedState();
+          if (saved) {
+            applySiteState(saved);
+            run.restored = true;
+            console.info('[memory] put the dig site back as it was');
+          }
+        } else {
+          // A new table starts with the site at its centre, square to the table and
+          // facing the user, the excavator parked at home and the rocks in their pile.
+          site.rotation.y = quarterTurnToward(run.viewer, table.top.center, table.top.yaw);
+          resetSite();
+        }
         logTablePick(table, candidates);
       }
       driveExcavator(readLeftStick(xrSession.inputSources), right, table.top, dt);
@@ -356,7 +425,13 @@ export function initApp() {
       if (run.digging) run.digTime += dt; // holding A digs; letting go stops the arm where it is
       placeSite(table.top);
       run.digPose = animateSite(time / 1000, run.digTime);
+      moveRocks(table.top, dt);
+      moveWorker(table.top, dt);
       if (run.digging) tracker.confirm(); // the user is working with this table: keep it
+      if (!tracker.provisional) {
+        const at = anchorPosition(table.top);
+        memory.keep(frame, refSpace, { ...at, yaw: table.top.yaw + site.rotation.y }, siteState, time);
+      }
       if (run.seenAt === null && run.viewer && viewAngleTo(siteCentre(table.top), run.viewer) <= SEEN_ANGLE) {
         run.seenAt = time;
       }
@@ -423,11 +498,99 @@ export function initApp() {
     return { candidates: planes.length > 0 ? planes : meshes, sceneObjectCount };
   }
 
-  // Holding B cycles the excavator's paint; the colour stays where it is when B is released.
+  // Holding B cycles the excavator's paint; the colour stays where it is when B is
+  // released, and is remembered.
   function repaint(controller, dt) {
-    if (!controller?.bPressed) return;
+    const pressed = Boolean(controller?.bPressed);
+    if (run.repainting && !pressed) saveStorage(PAINT_KEY, String(paintHsl.h));
+    run.repainting = pressed;
+    if (!pressed) return;
     paintHsl.h = nextHue(paintHsl.h, dt);
     paint.color.setHSL(paintHsl.h, paintHsl.s, paintHsl.l, THREE.SRGBColorSpace);
+  }
+
+  // The dig site as it was built: the excavator parked with its arm at rest, the rocks in
+  // their pile and the worker where he stood.
+  function resetSite() {
+    run.drive = parkedAt(excavatorHome);
+    run.digTime = 0;
+    run.lastPhase = digPose(0).phase;
+    rocks.reset();
+    run.worker = standingAt(workerHome);
+    setDrive(run.drive);
+    setWorker(run.worker);
+  }
+
+  // Everything on the dig site that's remembered between sessions (src/placementMemory.js),
+  // in the site's model frame.
+  function siteState() {
+    const d = run.drive;
+    return {
+      excavator: { x: d.x, z: d.z, heading: wrapAngle(d.heading), swing: wrapAngle(d.swing), digTime: run.digTime % DIG_CYCLE_S },
+      rocks: rocks.state(),
+      worker: { x: run.worker.x, z: run.worker.z, facing: run.worker.facing },
+    };
+  }
+
+  // Puts a saved siteState() back; whatever doesn't make sense starts as built.
+  function applySiteState(saved) {
+    resetSite();
+    const e = saved?.excavator;
+    if (e && ['x', 'z', 'heading', 'swing', 'digTime'].every((k) => Number.isFinite(e[k]))) {
+      run.drive = { ...parkedAt({ x: e.x, z: e.z, heading: e.heading }), swing: e.swing };
+      run.digTime = Math.max(0, e.digTime);
+      run.lastPhase = digPose(run.digTime).phase; // no scoop or dump just for coming back
+    }
+    rocks.restore(saved?.rocks);
+    const w = saved?.worker;
+    if (w && ['x', 'z', 'facing'].every((k) => Number.isFinite(w[k]))) run.worker = standingAt(w);
+    setDrive(run.drive);
+    animateSite(0, run.digTime);
+    setWorker(run.worker);
+  }
+
+  // What the excavator mustn't drive into: the rocks lying about and the worker.
+  function siteObstacles() {
+    return [...rocks.obstacles(), { x: run.worker.x, z: run.worker.z, r: workerRadius }];
+  }
+
+  // The dig cycle moves rocks: starting a scoop picks up the top rock near the teeth, and
+  // the bucket opening at the end of the dump lets it fall. Falling rocks land.
+  function moveRocks(top, dt) {
+    const phase = run.digPose.phase;
+    if (phase !== run.lastPhase) {
+      if (run.lastPhase === 'scoop') rocks.carry(1); // the scoop's done: the rock rides in the bucket
+      if (phase === 'scoop') rocks.scoop(teeth());
+      if (phase === 'return') {
+        const area = driveArea(top);
+        rocks.dump({ contains: (x, z, r) => settle({ x, z }, r, area) }); // it lands on the table
+      }
+      run.lastPhase = phase;
+    }
+    if (phase === 'scoop') {
+      const [start, end] = [DIG_KEYS[1].t, DIG_KEYS[2].t];
+      rocks.carry(((run.digTime % DIG_CYCLE_S) - start) / (end - start));
+    }
+    rocks.update(dt);
+  }
+
+  // The worker watches the excavator and walks out of the way of its arm (low enough to
+  // hit him), now or where the swing and the drive will take it, and of the machine itself.
+  function moveWorker(top, dt) {
+    const d = run.drive;
+    const arm = armPoints().filter((p) => p.y < WORKER_HEIGHT);
+    const body = { x: d.x, z: d.z };
+    const ahead = (points) => [points, ...LOOKAHEADS_S.map((s) => predictPoints(points, d, s))].flat();
+    const threats = [
+      ...ahead(arm).map((p) => ({ x: p.x, z: p.z, r: ARM_THREAT_RADIUS })),
+      ...ahead([body]).map((p) => ({ x: p.x, z: p.z, r: bodyRadius })),
+    ];
+    run.worker = stepWorker(
+      run.worker,
+      { threats, watch: body, radius: workerRadius, area: driveArea(top), obstacles: [...rocks.obstacles(), { ...body, r: bodyRadius }] },
+      dt,
+    );
+    setWorker(run.worker, limbSwing(run.worker));
   }
 
   // The left stick drives the excavator round the table, the right stick swings its cab
@@ -443,7 +606,7 @@ export function initApp() {
         mode: steering,
         viewHeading: worldHeading && intoFrame(worldHeading, top.yaw + site.rotation.y),
       },
-      { area: driveArea(top), radius: bodyRadius, obstacles },
+      { area: driveArea(top), radius: bodyRadius, obstacles: siteObstacles() },
       dt,
     );
     setDrive(run.drive);
@@ -519,11 +682,38 @@ export function initApp() {
       radius: bodyRadius * metres,
       blocked: Boolean(d.blocked),
       atHome: d.x === excavatorHome.x && d.z === excavatorHome.z && d.heading === excavatorHome.heading && d.swing === 0,
-      // Gap between its body circle and the nearest of the worker and the rock pile.
-      clearance: Math.min(...obstacles.map((o) => Math.hypot(d.x - o.x, d.z - o.z) - bodyRadius - o.r)) * metres,
+      // Gap between its body circle and the nearest of the worker and the rocks.
+      clearance: Math.min(...siteObstacles().map((o) => Math.hypot(d.x - o.x, d.z - o.z) - bodyRadius - o.r)) * metres,
       digTime: run.digTime,
       digging: run.digging,
       steering,
+    };
+  }
+
+  // The rocks in the model frame (design units: 0.5 mm at full size), and how many have
+  // been moved from the pile they started in.
+  function rocksSnapshot() {
+    const state = rocks.state();
+    const moved = state.filter((s, i) => {
+      const start = rocks.initial[i];
+      return s.carried || Math.hypot(s.x - start.x, s.z - start.z) > 5;
+    }).length;
+    return { state, moved, busy: rocks.busy };
+  }
+
+  // Where the worker is (room, metres) and how close the excavator's arm is to him.
+  function workerSnapshot() {
+    const w = run.worker;
+    const top = lockedTop();
+    const metres = SITE_UNIT * (top ? siteScale(top) : 1);
+    const arm = armPoints().filter((p) => p.y < WORKER_HEIGHT).map((p) => ({ x: p.x, z: p.z, r: ARM_THREAT_RADIUS }));
+    return {
+      x: w.x,
+      z: w.z,
+      facing: w.facing,
+      walking: Boolean(w.target),
+      // Gap between him and the nearest low part of the arm, in metres.
+      armGap: (nearestThreat(w, workerRadius, arm)?.gap ?? Infinity) * metres,
     };
   }
 
@@ -575,6 +765,10 @@ export function initApp() {
           lines.push('Pull the trigger or pinch for the next table.');
           const index = tracker.indexOf(run.candidates, run.viewer) + 1;
           return { title: `Table ${index} of ${count}`, lines };
+        }
+        if (run.restored) {
+          lines.push('As you left it. Reset on the menu starts afresh.');
+          return { title: 'Your dig site is back', lines };
         }
         if (run.seenAt !== null) lines.push('It starts at the centre of your table.');
         return { title: 'Excavator placed', lines };
@@ -697,6 +891,9 @@ export function initApp() {
         digPhase: run.digPose?.phase ?? null,
       },
       excavator: excavatorSnapshot(),
+      rocks: rocksSnapshot(),
+      worker: workerSnapshot(),
+      memory: { ...memory.snapshot(), restored: run.restored },
       panel: panel.mesh.visible ? panel.key : null,
       xrVisibility: renderer.xr.getSession()?.visibilityState ?? null,
       depth: renderer.xr.isPresenting
@@ -735,9 +932,19 @@ function loadSteering() {
   }
 }
 
-function saveSteering(mode) {
+/** A number saved under `key`, or null. */
+function loadNumber(key) {
   try {
-    localStorage.setItem(STEERING_KEY, mode);
+    const value = Number.parseFloat(localStorage.getItem(key));
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    return null; // storage blocked
+  }
+}
+
+function saveStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
   } catch {
     // storage blocked: it lasts until the page reloads
   }

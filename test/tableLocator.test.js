@@ -4,12 +4,14 @@ import {
   DROPOUT_GRACE_MS,
   TableTracker,
   bearingTo,
+  findRemembered,
   isTableLabel,
   pickTable,
   sameTable,
   polygonCentroid,
   polygonExtents,
   quarterTurnToward,
+  snapQuarterTurn,
   sortByDistance,
   tableTopFromMesh,
   tableTopFromPlane,
@@ -554,4 +556,40 @@ test('TableTracker reports each ridden-out dropout once, with how long and how i
   tracker.update([other], viewer, 2000 + DROPOUT_GRACE_MS);
   assert.equal(tracker.reason, 'table lost');
   assert.equal(tracker.takeRecovery(), null);
+});
+
+// ---------- the remembered table ----------
+
+test('snapQuarterTurn rounds to 0, π/2, π or 3π/2', () => {
+  near(snapQuarterTurn(0.2), 0);
+  near(snapQuarterTurn(Math.PI / 2 + 0.3), Math.PI / 2);
+  near(snapQuarterTurn(-Math.PI / 2 - 0.1), (3 * Math.PI) / 2);
+  near(snapQuarterTurn(5 * Math.PI - 0.2), Math.PI);
+});
+
+test('findRemembered picks the table under the remembered spot, within 30 cm and 10 cm up or down', () => {
+  const a = candidate('a', 0, -1);
+  const b = candidate('b', 0.25, -1.1);
+  assert.equal(findRemembered([a, b], { x: 0.2, y: 0.76, z: -1.05 }), b, 'the nearer centre wins');
+  assert.equal(findRemembered([a], { x: 0.31, y: 0.75, z: -1 }), null, 'too far across');
+  assert.equal(findRemembered([a], { x: 0, y: 0.9, z: -1 }), null, 'a different height: another table');
+  assert.equal(findRemembered([], { x: 0, y: 0.75, z: -1 }), null);
+});
+
+test("TableTracker.lockTo makes a firm lock that later tables don't override", () => {
+  const near1 = candidate('near', 0, -1);
+  const far = candidate('far', 0, -3);
+  const tracker = new TableTracker();
+  tracker.update([near1, far], { x: 0, y: 1.6, z: 0 });
+  assert.equal(tracker.provisional, true);
+  const id = tracker.lockId;
+  assert.equal(tracker.lockTo(far, { x: 0, y: 1.6, z: 0 }, 'remembered'), far);
+  assert.equal(tracker.reason, 'remembered');
+  assert.equal(tracker.provisional, false);
+  assert.equal(tracker.lockId, id + 1);
+  // Locking it the same way again changes nothing.
+  tracker.lockTo(far, null, 'remembered');
+  assert.equal(tracker.lockId, id + 1);
+  // A new table arriving doesn't move it: the lock is firm.
+  assert.equal(tracker.update([near1, far, candidate('new', 0, -0.5)], { x: 0, y: 1.6, z: 0 }), far);
 });
