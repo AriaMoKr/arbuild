@@ -186,15 +186,23 @@ async function connect(profile, proc, shutdown) {
       fs.writeFileSync(file, Buffer.from(res.data, 'base64'));
       return path.relative(root, file);
     },
-    /** Counts the coloured pixels on screen: the dig site's. The room and the panel are grey. */
-    async colouredPixels() {
+    /**
+     * Counts the coloured pixels on screen: the dig site's. The room and the panel are grey.
+     * `rect` ({ dx, dy, half }: a square `half` pixels round the screen centre, shifted by
+     * dx, dy) counts only that part of the screen.
+     */
+    async colouredPixels(rect = null) {
       const res = await send('Page.captureScreenshot', { format: 'png' });
       return evaluate(`(async () => {
         const image = await createImageBitmap(await (await fetch('data:image/png;base64,${res.data}')).blob());
         const canvas = new OffscreenCanvas(image.width, image.height);
         const context = canvas.getContext('2d');
         context.drawImage(image, 0, 0);
-        const { data } = context.getImageData(0, 0, image.width, image.height);
+        const rect = ${JSON.stringify(rect)};
+        const [x0, y0, w, h] = rect
+          ? [Math.round(image.width / 2 + rect.dx - rect.half), Math.round(image.height / 2 + rect.dy - rect.half), 2 * rect.half, 2 * rect.half]
+          : [0, 0, image.width, image.height];
+        const { data } = context.getImageData(x0, y0, w, h);
         let count = 0;
         for (let i = 0; i < data.length; i += 4) {
           if (Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2]) > 20) count++;
@@ -243,15 +251,18 @@ function assertNoProblems(browser) {
 const snapshot = (b) => b.evaluate('window.__app.snapshot()');
 const pct = (fraction) => `${Math.round(fraction * 100)}%`;
 
-/** How much of the dig site depth occlusion leaves on screen: its pixels with and without. */
-async function shownFraction(browser) {
-  const shown = await browser.colouredPixels();
+/**
+ * How much of the dig site depth occlusion leaves on screen: its pixels with and without
+ * (in `rect`, see colouredPixels, or the whole screen; `least` is how many it must have without).
+ */
+async function shownFraction(browser, rect = null, least = 500) {
+  const shown = await browser.colouredPixels(rect);
   await browser.evaluate('window.__app.setOcclusion(false)');
   await sleep(150);
-  const all = await browser.colouredPixels();
+  const all = await browser.colouredPixels(rect);
   await browser.evaluate('window.__app.setOcclusion(true)');
   await sleep(150);
-  if (all < 500) throw new Error(`the dig site is barely on screen (${all} px) even without occlusion`);
+  if (all < least) throw new Error(`the dig site is barely on screen (${all} px) even without occlusion`);
   return shown / all;
 }
 
@@ -906,6 +917,37 @@ const scenarios = {
     await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
     assertNoProblems(browser);
     return `${diorama.marks.tracks} track marks, ${diorama.marks.spills} dirt marks; ${shots.join(', ')}`;
+  },
+
+  async 'meeting room: a thing lying on the table shows through the dirt'(browser, base) {
+    // A controller lying on the desk (3 cm thick) looked buried in the diorama's dirt: the
+    // normal tolerance (hidden from 2 cm, fully at 5 cm) left the dirt half over it. Things
+    // flat on the table use a tighter one. A fake 12 x 3 x 12 cm prop on the dirt, seen from
+    // straight above: the dirt over it must go (its edge softens over about 1 cm: the 3x3
+    // depth taps), the dirt beside it must stay.
+    await openApp(browser, base, 'emulate=1&env=meeting_room');
+    await enterAR(browser);
+    await browser.waitFor('window.__app.snapshot().depth?.active === true', { timeout: 5000, label: 'depth sensing active' });
+    const [tx, ty, tz] = MEETING_ROOM_TABLE;
+    const [px, pz] = [tx + 0.02, tz + 0.1]; // on the dirt, between the worker and the excavator
+    await browser.evaluate(`window.__iwer.addProp({ at: [${px}, ${ty + 0.015}, ${pz}], size: [0.12, 0.03, 0.12] })`);
+    await browser.evaluate(`(() => {
+      const d = window.__iwer.xrDevice;
+      d.position.set(${px}, ${ty + 0.6}, ${pz});
+      const pitch = -Math.PI / 2; // straight down: screen right is +X, screen up is -Z
+      d.quaternion.set(Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2));
+    })()`);
+    await sleep(800);
+    // 90 degrees of view over the screen height at 0.6 m: about 1.85 mm per pixel.
+    const over = await shownFraction(browser, { dx: 0, dy: 0, half: 10 }, 200);
+    const beside = await shownFraction(browser, { dx: 70, dy: 0, half: 8 }, 150); // 13 cm to the side, on the dirt
+    const shot = await browser.screenshot('prop-on-the-dirt');
+    if (over > 0.1) throw new Error(`${pct(over)} of the dirt still shows over a 3 cm thing lying on it`);
+    if (beside < 0.95) throw new Error(`only ${pct(beside)} of the dirt shows beside it`);
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    assertNoProblems(browser);
+    return `dirt over the prop ${pct(over)}, beside it ${pct(beside)}; ${shot}`;
   },
 
   async 'meeting room: depth sensing hides the dig site behind real things'(browser, base) {

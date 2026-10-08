@@ -1,6 +1,7 @@
 // Desktop-only Quest 3 emulation with Meta's Immersive Web Emulation Runtime (IWER)
 // and its Synthetic Environment Module (SEM), which supplies a scanned room with
 // labelled planes and meshes, tables included. Loaded only from the dev server.
+import * as THREE from 'three';
 import { XRDevice, XRWebGLDepthInformation, metaQuest3 } from 'iwer';
 import { SyntheticEnvironmentModule } from '@iwer/sem';
 
@@ -24,7 +25,15 @@ export async function installEmulation({ env = 'meeting_room', showPlanes = fals
     xrDevice.sem.boundingBoxesVisible = true;
   }
 
-  window.__iwer = { xrDevice, env }; // test hook for scripts/e2e.mjs
+  // Test hooks for scripts/e2e.mjs. addProp puts a box into the synthetic room (it shows in
+  // the depth map, like a real thing on the table); `at` is its centre in room metres.
+  const addProp = ({ at, size }) => {
+    const prop = new THREE.Mesh(new THREE.BoxGeometry(...size), new THREE.MeshStandardMaterial({ color: 0x9a9a9a }));
+    prop.position.set(...at);
+    xrDevice.sem.meshes.add(prop); // SEM renders this group into the depth map
+    return () => xrDevice.sem.meshes.remove(prop);
+  };
+  window.__iwer = { xrDevice, env, addProp };
   console.info(`[emulation] IWER Quest 3 with synthetic room "${env}"`);
   return xrDevice;
 }

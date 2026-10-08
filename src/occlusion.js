@@ -21,8 +21,14 @@ import * as THREE from 'three';
 // Reading it with the reported far made real surfaces look a few cm nearer, enough to hide
 // things resting on the table. The headset's values are logged ('[depth] depth map: ...').
 
-const TOLERANCE_START_M = 0.02; // real surface this much nearer: starts to hide
-const TOLERANCE_FULL_M = 0.05; // this much nearer: fully hidden
+// Tolerances [start, full] in metres: a real surface `start` nearer begins to hide the
+// pixel, `full` nearer hides it completely. The default suits things standing on the
+// table: the table's own depth is noisy, and the rubble and shadows at its surface
+// flickered with less. Things lying flat on the table (the diorama's dirt, the marks)
+// need a tighter one, or a controller lying on the desk (3 cm thick) is only a third
+// hidden and the dirt paints over it; the flat things never rise above the noise anyway.
+export const DEFAULT_TOLERANCE = [0.02, 0.05];
+export const GROUND_TOLERANCE = [0.01, 0.022];
 const SAMPLE_SPREAD_TEXELS = 1.5;
 
 const DECLARATIONS = /* glsl */ `
@@ -34,6 +40,7 @@ uniform float occlusionFar; // 0 = infinite
 uniform float occlusionDepthNear; // the depth map's projection
 uniform float occlusionDepthFar; // 0 = infinite
 uniform bool occlusionDebug; // dev only: show the depths as colours instead
+uniform vec2 occlusionTolerance; // this material's [start, full], metres
 
 float occlusionMetres(float d, float near, float far) { // window depth -> distance
   if (far <= 0.0) return near / max(1.0 - d, 1e-7);
@@ -58,8 +65,8 @@ float occlusionHidden() {
       float raw = texture(occlusionDepth, vec3(uv + vec2(float(x), float(y)) * spread, layer)).r;
       if (raw <= 0.0) continue; // no depth measured here
       float real = occlusionRealMetres(raw);
-      // Fully hidden when the real surface is TOLERANCE_FULL nearer, not at all within TOLERANCE_START.
-      hidden += 1.0 - smoothstep(z - ${TOLERANCE_FULL_M.toFixed(3)}, z - ${TOLERANCE_START_M.toFixed(3)}, real);
+      // Fully hidden when the real surface is 'full' nearer, not at all within 'start'.
+      hidden += 1.0 - smoothstep(z - occlusionTolerance.y, z - occlusionTolerance.x, real);
       samples += 1.0;
     }
   }
@@ -104,14 +111,18 @@ export class SoftOcclusion {
     renderer.xr.getDepthSensingMesh = () => null;
   }
 
-  /** Makes `material` occludable. Each material only once; call before precompiling. */
-  apply(material) {
+  /**
+   * Makes `material` occludable, with its own `tolerance` ([start, full] metres,
+   * DEFAULT_TOLERANCE unless given). Each material only once; call before precompiling.
+   */
+  apply(material, { tolerance = DEFAULT_TOLERANCE } = {}) {
     if (material.userData.softOcclusion) return;
     material.userData.softOcclusion = true;
     if (!material.transparent) material.alphaToCoverage = true; // soft edges on opaque parts via MSAA
     const uniforms = this.uniforms;
     material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);
+      shader.uniforms.occlusionTolerance = { value: new THREE.Vector2(tolerance[0], tolerance[1]) }; // this material's own
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>\n${DECLARATIONS}`)
         .replace('#include <dithering_fragment>', `${APPLY}\n#include <dithering_fragment>`);

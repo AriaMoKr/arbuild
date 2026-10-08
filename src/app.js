@@ -5,7 +5,7 @@ import { FrameTrace } from './frameTrace.js';
 import { DIG_CYCLE_S, DIG_KEYS, SITE_UNIT, createDigSite, digPose } from './digSite.js';
 import { STYLES } from './styles.js';
 import { noTread, treadMarks } from './groundMarks.js';
-import { SoftOcclusion } from './occlusion.js';
+import { GROUND_TOLERANCE, SoftOcclusion } from './occlusion.js';
 import { SiteSound } from './siteSound.js';
 import { PlacementMemory } from './placementMemory.js';
 import { LOOKAHEADS_S, limbSwing, nearestThreat, predictPoints, standingAt, stepWorker } from './worker.js';
@@ -113,7 +113,8 @@ export function initApp() {
   if (import.meta.env.DEV && new URLSearchParams(location.search).get('occlusion') === 'debug') occlusion.debug = true;
   for (const d of digs.values()) {
     d.site.traverse((o) => {
-      if (o.isMesh || o.isLine) occlusion.apply(o.material);
+      // Things lying flat on the table hide behind anything on it, even a controller.
+      if (o.isMesh || o.isLine) occlusion.apply(o.material, o.userData.ground ? { tolerance: GROUND_TOLERANCE } : undefined);
     });
     d.site.visible = d === dig;
     anchor.add(d.site);
