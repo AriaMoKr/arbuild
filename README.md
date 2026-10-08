@@ -1,6 +1,6 @@
 # Table Cube
 
-A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres. It's about 42 × 20 cm, and shrinks to fit smaller tables. You drive the excavator round the table top, swing its cab and dig with it: it scoops rocks out of the pile and dumps them wherever you swing or drive it, while the worker keeps out of its way. Engine, hydraulic and rock sounds come from it (off until you turn them on from the menu). The app remembers your dig site, table and all, for next time. On Quest 3 your hands and real objects in front of it hide it, using the headset's depth sensing. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
+A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres, styled as a tabletop diorama on its own patch of ground. It's about 42 × 20 cm, and shrinks to fit smaller tables. You drive the excavator round the table top, swing its cab and dig with it: it scoops rocks out of the pile and dumps them wherever you swing or drive it, while the worker keeps out of its way. Engine, hydraulic and rock sounds come from it (off until you turn them on from the menu). The app remembers your dig site, table and all, for next time. On Quest 3 your hands and real objects in front of it hide it, using the headset's depth sensing. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
 
 ## Requirements
 
@@ -55,8 +55,10 @@ The dig site goes on the nearest table, preferring one in front of you when it's
 | Hold **B** | The excavator's paint cycles through colours while you hold it, and keeps the colour it reached when you let go. |
 | The worker | He watches the excavator, and walks out of the way when its arm swings or reaches towards him, or when it drives at him. |
 | Coming back later | Each table keeps its own dig site: the excavator's place and arm, the rocks and the worker. Switch to another table and back, and the first one is as you left it (the panel says "Your dig site is back"); a table you haven't used starts fresh. Next time you enter AR, the site goes back on the table you used last, also after you've taken the headset off for a while. Up to 6 tables are remembered. **↺ Reset** on the menu starts the current table afresh. The paint colour is one for all. |
+| Tracks and dirt | In the diorama look the excavator leaves tyre tracks where it drives, a dug patch where the bucket scoops and dirt where a rock lands, on its patch of ground or on the bare table. They're kept with the table's dig site. |
+| **Look** on the menu | Switches between the diorama (the default) and the plain look, with everything on the site kept. Remembered in this browser. |
 | **Sound off / Sound on** on the menu | Turns the dig site's sound on or off. It starts off, and your choice is remembered in this browser. |
-| The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload** reloads the app, **Sound** turns the sound on or off, **Steering** switches between relative and absolute steering (remembered too), **↺ Reset** puts the dig site back as it started. Reload is handy after a code change, since the browser's own controls are out of reach in AR. Its bottom line shows when the app's files last changed ("Updated …"), the same as under the title on the page, so you can tell whether the headset is running the latest version. |
+| The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload** reloads the app, **Sound** turns the sound on or off, **Steering** switches between relative and absolute steering (remembered too), **↺ Reset** puts the dig site back as it started, **Look** switches between the diorama and the plain look. Reload is handy after a code change, since the browser's own controls are out of reach in AR. Its bottom line shows when the app's files last changed ("Updated …"), the same as under the title on the page, so you can tell whether the headset is running the latest version. |
 | Pinch does nothing | Use a controller trigger, or allow hand tracking from the same site-info icon and reload. |
 
 To leave AR, use **Exit AR** on the menu above your left hand, or press the Meta button: Quest Browser shows controls near the address bar to resume or quit the immersive session. If something prevented the dig site from appearing, the page repeats what to fix after you leave AR.
@@ -72,11 +74,12 @@ Query parameters (dev server only):
 | `?env=meeting_room` | Synthetic room to load: `meeting_room` (default, one table), `office_small`, `living_room` (four tables), `office_large`, `music_room`. |
 | `?planes=1` | Draw the emulated planes and furniture boxes. |
 | `?emulate=1` / `?emulate=0` | Force the emulator on or off. |
+| `?style=toy` | Build the dig site in one of the sketch looks instead: `toy`, `wood`, `cartoon`, `hologram` or `clay` (or `diorama`/`plain`). The Look button then has nothing to switch to. |
 | `?occlusion=debug` | Colour the dig site by depth instead of hiding it: red = how hidden, green = real distance ÷ 3 m, blue = the site's own distance ÷ 3 m. Works on the headset too. |
 
 ### Debug log
 
-In dev builds, the page sends its console output, uncaught errors and a snapshot of the app's state back to the dev server, which appends them to `logs/quest-debug.jsonl` (one JSON object per line). That works from the headset too, with no USB cable. The snapshot covers detected tables, placement, frame rate and controllers, and is sent whenever something changes and every 10 s during AR. Errors and warnings from the page are also printed in the `npm run dev` terminal. It also records which table was picked and why, and when a table that briefly dropped out came back (`[tables] …`), every menu button press (`[menu] …`), how long the shaders took to compile before AR (`[shaders] …`), the frame timing of each session's first 3 seconds (`[startup] …`), whether depth sensing started and the depth map's size and near/far planes (`[depth] …`), the remembered dig site being anchored, saved, found and put back (`[memory] …`), steering changes (`[drive] …`), and when the session's visibility changes, for example when the headset is taken off (`[session] …`). Add `?debug=0` to the URL to turn it off. None of this is in `npm run build`.
+In dev builds, the page sends its console output, uncaught errors and a snapshot of the app's state back to the dev server, which appends them to `logs/quest-debug.jsonl` (one JSON object per line). That works from the headset too, with no USB cable. The snapshot covers detected tables, placement, frame rate and controllers, and is sent whenever something changes and every 10 s during AR. Errors and warnings from the page are also printed in the `npm run dev` terminal. It also records which table was picked and why, and when a table that briefly dropped out came back (`[tables] …`), every menu button press (`[menu] …`), how long the shaders took to compile before AR (`[shaders] …`), the frame timing of each session's first 3 seconds (`[startup] …`), whether depth sensing started and the depth map's size and near/far planes (`[depth] …`), the remembered dig site being anchored, saved, found and put back (`[memory] …`), steering and look changes (`[drive] …`, `[look] …`), and when the session's visibility changes, for example when the headset is taken off (`[session] …`). Add `?debug=0` to the URL to turn it off. None of this is in `npm run build`.
 
 Tests:
 
@@ -112,13 +115,15 @@ src/app.js              renderer, AR session, per-frame table tracking, dig site
 src/digSite.js          the dig site: excavator, operator, worker and rocks from boxes, cylinders and spheres, and its dig cycle
 src/excavatorDrive.js   driving and swinging the excavator from the thumbsticks (pure, unit-tested)
 src/rocks.js            the rocks, one by one: scooped, carried, dumped, falling and stacking
+src/styles.js           the looks: diorama and plain, and sketches of five others
+src/groundMarks.js      tyre tracks, dug patches and dirt left on the table
 src/worker.js           the worker watching the excavator and keeping out of its way (pure, unit-tested)
 src/placementMemory.js  remembering a dig site per table between sessions, with persistent anchors
 src/siteSound.js        engine, hydraulics and rock sounds, made with WebAudio and placed at the excavator
 src/occlusion.js        soft depth occlusion added to the dig site's materials
 src/tableLocator.js     table detection maths and table selection (pure, unit-tested)
 src/statusPanel.js      in-headset text panel
-src/xrMenu.js           in-AR menu above the left hand: Exit AR, Reload page, Sound, Steering, Reset, "Updated …"
+src/xrMenu.js           in-AR menu above the left hand: Exit AR, Reload page, Sound, Steering, Reset, Look, "Updated …"
 src/frameTrace.js       times each frame of a session's first seconds, for the debug log
 src/version.js          fetches ./__version.json, when the app's files last changed
 src/emulation.js        dev-only Quest 3 emulator setup (IWER + synthetic rooms)

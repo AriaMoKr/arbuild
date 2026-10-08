@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as THREE from 'three';
 import { DIG_CYCLE_S, DIG_KEYS, createDigSite, digPose } from '../src/digSite.js';
 
 const site = createDigSite({ shadowTexture: null }); // no DOM canvas in node
@@ -93,6 +94,28 @@ test('from home, the teeth reach the rock pile at the end of the reach, and dump
   assert.ok(nearest < 90, `the nearest rock is ${nearest.toFixed(0)} units from the teeth`);
   assert.ok(Math.hypot(dump.x - reach.x, dump.z - reach.z) < 30, 'without a swing, the dump is over the pile');
   assert.ok(dump.y > reach.y + 50, 'the bucket dumps from up high');
+});
+
+test('the diorama look: same layout, its ground and decorations lie on the table, never under it', () => {
+  const diorama = createDigSite({ shadowTexture: null, style: 'diorama' });
+  assert.ok(Math.abs(diorama.radius - site.radius) < 0.002, 'the same footprint, within 2 mm');
+  assert.deepEqual(diorama.home, site.home);
+  assert.equal(diorama.marks.tracks.mesh.visible, true);
+  assert.equal(site.marks.tracks.mesh.visible, false, 'the plain look keeps its marks hidden');
+  let ground = 0;
+  diorama.site.updateMatrixWorld(true);
+  diorama.site.traverse((o) => {
+    if (!o.isMesh || !o.userData.ground || o.isInstancedMesh) return;
+    ground++;
+    const p = o.geometry.attributes.position;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld); // the site's frame, metres
+      assert.ok(v.y >= -0.5 * 0.0005 - 1e-6, `a piece of ground goes ${(v.y * 1000).toFixed(2)} mm under the table`);
+      assert.ok(Math.hypot(v.x, v.z) < diorama.radius * 1.02, `a piece of ground reaches ${Math.hypot(v.x, v.z).toFixed(3)} m out`);
+    }
+  });
+  assert.ok(ground > 20, `${ground} pieces of ground`);
 });
 
 test('the arm points run from the elbow to the teeth, and the worker can be posed walking', () => {

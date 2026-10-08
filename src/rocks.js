@@ -146,8 +146,9 @@ export class Rocks {
     this._drop(rock, to, end);
   }
 
-  /** Moves falling rocks on by `dt` seconds. */
+  /** Moves falling rocks on by `dt` seconds. Returns the rocks that landed. */
   update(dt) {
+    const landed = [];
     for (const r of this.rocks) {
       if (r.state !== 'falling') continue;
       const fall = r.fall;
@@ -160,8 +161,10 @@ export class Rocks {
         r.state = 'resting';
         r.fall = null;
         this._sync(r);
+        landed.push(r);
       }
     }
+    return landed;
   }
 
   /** Whether a rock is moving: in the bucket or falling. */

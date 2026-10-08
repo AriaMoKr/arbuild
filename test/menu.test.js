@@ -6,7 +6,8 @@ import { formatVersion } from '../src/version.js';
 const v = (y) => 1 - y / MENU_CANVAS.height; // canvas y (down) -> texture v (up)
 
 test('buttonAt maps texture coordinates (v up) to the menu buttons', () => {
-  // Three buttons across the top: Exit AR, Reload, Sound; Steering and Reset in the second row.
+  // Three buttons across the top: Exit AR, Reload, Sound; Steering and Reset in the second
+  // row; Look across the third.
   assert.equal(buttonAt(0.18, v(84)), 'exit');
   assert.equal(buttonAt(0.5, v(84)), 'reload');
   assert.equal(buttonAt(0.82, v(84)), 'sound');
@@ -14,10 +15,12 @@ test('buttonAt maps texture coordinates (v up) to the menu buttons', () => {
   assert.equal(buttonAt(0.6, v(210)), 'steering');
   assert.equal(buttonAt(0.82, v(210)), 'reset');
   assert.equal(buttonAt(0.658, v(210)), null);
+  assert.equal(buttonAt(0.5, v(326)), 'look');
+  assert.equal(buttonAt(0.5, v(268)), null); // between the second and third rows
   assert.equal(buttonAt(0.342, v(84)), null); // the gaps between them
   assert.equal(buttonAt(0.658, v(84)), null);
   assert.equal(buttonAt(0.5, v(152)), null); // between the rows
-  assert.equal(buttonAt(0.5, v(305)), null); // the version line at the bottom
+  assert.equal(buttonAt(0.5, v(421)), null); // the version line at the bottom
   assert.equal(buttonAt(0.01, 0.99), null); // the panel's rounded corner
 });
 

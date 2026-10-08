@@ -822,6 +822,92 @@ const scenarios = {
     return `${made.rocks.moved} rock(s) moved, excavator at ${made.excavator.onTable.x.toFixed(3)}, ${made.excavator.onTable.z.toFixed(3)} m: kept through the dropout and the reload; ${shot}`;
   },
 
+  async 'meeting room: the diorama shows tracks and dirt; Look switches to plain and back, keeping everything'(browser, base) {
+    await openApp(browser, base, 'emulate=1&env=meeting_room');
+    let s = await enterAR(browser);
+    if (s.look !== 'diorama') throw new Error(`the default look is ${s.look}`);
+    if (s.marks.tracks || s.marks.spills) throw new Error(`marks on a fresh site: ${JSON.stringify(s.marks)}`);
+    const left = 'window.__iwer.xrDevice.controllers.left';
+    const right = 'window.__iwer.xrDevice.controllers.right';
+
+    // Driving leaves tracks.
+    await browser.evaluate(`(async () => { ${left}.updateAxes('thumbstick', 0, -1); await new Promise((r) => setTimeout(r, 700)); ${left}.updateAxes('thumbstick', 0, 0); await new Promise((r) => setTimeout(r, 500)); })()`);
+    s = await snapshot(browser);
+    if (!(s.marks.tracks >= 4)) throw new Error(`driving left ${s.marks.tracks} track marks`);
+
+    // Scoop (a dug patch), swing away, dump: the rock lands on dirt.
+    const holdA = async (phase) => {
+      await browser.evaluate(`${right}.updateButtonValue('a-button', 1)`);
+      await browser.waitFor(`window.__app.snapshot().site.digPhase === '${phase}'`, { timeout: 8000, label: `dig phase ${phase}` });
+      await sleep(300);
+      await browser.evaluate(`${right}.updateButtonValue('a-button', 0)`);
+    };
+    await holdA('lift');
+    const dug = (await snapshot(browser)).marks.spills;
+    if (dug < 1) throw new Error('the scoop left no dug patch');
+    await browser.evaluate(`(async () => { ${right}.updateAxes('thumbstick', 1, 0); await new Promise((r) => setTimeout(r, 1200)); ${right}.updateAxes('thumbstick', 0, 0); await new Promise((r) => setTimeout(r, 500)); })()`);
+    await holdA('return');
+    await browser.waitFor('!window.__app.snapshot().rocks.busy', { timeout: 3000, label: 'the rock landed' });
+    const diorama = await snapshot(browser);
+    if (!(diorama.marks.spills > dug)) throw new Error(`the dumped rock left no dirt (${dug} -> ${diorama.marks.spills})`);
+    await browser.evaluate(`(() => {
+      const d = window.__iwer.xrDevice;
+      d.position.set(0.069, 1.25, -0.95);
+      const pitch = -40 * Math.PI / 180;
+      d.quaternion.set(Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2));
+    })()`);
+    await sleep(800);
+    const shots = [await browser.screenshot('diorama-tracks-and-dirt')];
+
+    const same = (a, b, label) => {
+      assertNear(a.excavator.position, b.excavator.position, `${label}: excavator`);
+      if (Math.abs(a.excavator.swing - b.excavator.swing) > 1e-6 || Math.abs(a.excavator.heading - b.excavator.heading) > 1e-6) throw new Error(`${label}: the excavator turned`);
+      a.rocks.state.forEach((r, i) => {
+        const q = b.rocks.state[i];
+        if (Boolean(r.carried) !== Boolean(q.carried) || (!r.carried && Math.hypot(r.x - q.x, r.y - q.y, r.z - q.z) > 1)) throw new Error(`${label}: rock ${i} moved`);
+      });
+      if (a.marks.tracks !== b.marks.tracks || a.marks.spills !== b.marks.spills) throw new Error(`${label}: marks ${JSON.stringify(a.marks)} -> ${JSON.stringify(b.marks)}`);
+    };
+
+    // The menu's Look button: plain, live, with everything kept and nothing new to compile or upload.
+    await browser.evaluate(`(() => { const d = window.__iwer.xrDevice; d.position.set(0, 1.6, 0); d.quaternion.set(0, 0, 0, 1); })()`);
+    await sleep(300);
+    const before = await snapshot(browser);
+    await aimAtMenuButton(browser, 'look');
+    await clickTrigger(browser);
+    await browser.waitFor(`window.__app.snapshot().look === 'plain'`, { timeout: 3000, label: 'plain look' });
+    await waitForDebugLog(/^\[look\] plain$/);
+    const plain = await snapshot(browser);
+    if (plain.menu.labels.look !== 'Look: plain') throw new Error(`menu label: ${plain.menu.labels.look}`);
+    same(before, plain, 'switched to plain');
+    if (plain.programs !== before.programs || plain.geometries !== before.geometries) {
+      throw new Error(`switching looks compiled or uploaded: programs ${before.programs} -> ${plain.programs}, geometries ${before.geometries} -> ${plain.geometries}`);
+    }
+
+    // Remembered: after a reload the site comes back in the plain look, marks and all.
+    await sleep(1500);
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    await openApp(browser, base, 'emulate=1&env=meeting_room', { remember: true });
+    await enterAR(browser);
+    await browser.waitFor('window.__app.snapshot().memory.restored', { timeout: 5000, label: 'restored' });
+    const reloaded = await snapshot(browser);
+    if (reloaded.look !== 'plain') throw new Error(`the look after a reload: ${reloaded.look}`);
+    same(plain, reloaded, 'after the reload');
+
+    // And back to the diorama.
+    await browser.evaluate(`(() => { const d = window.__iwer.xrDevice; d.position.set(0, 1.6, 0); d.quaternion.set(0, 0, 0, 1); })()`);
+    await sleep(300);
+    await aimAtMenuButton(browser, 'look');
+    await clickTrigger(browser);
+    await browser.waitFor(`window.__app.snapshot().look === 'diorama'`, { timeout: 3000, label: 'diorama again' });
+    same(reloaded, await snapshot(browser), 'back to the diorama');
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    assertNoProblems(browser);
+    return `${diorama.marks.tracks} track marks, ${diorama.marks.spills} dirt marks; ${shots.join(', ')}`;
+  },
+
   async 'meeting room: depth sensing hides the dig site behind real things'(browser, base) {
     await openApp(browser, base, 'emulate=1&env=meeting_room');
     await enterAR(browser);

@@ -21,6 +21,12 @@ export class SiteSound {
     this._phase = null;
   }
 
+  /** The sound now comes from `emitter` (the dig site's look was switched). */
+  setEmitter(emitter) {
+    this.emitter = emitter;
+    if (this.positional) emitter.add(this.positional);
+  }
+
   /** Builds the audio graph on first use and (re)starts it. Call from a user gesture. */
   start() {
     if (!this.context) this._build();

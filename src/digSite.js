@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { Rocks, SHADOW_SCALE as ROCK_SHADOW_SCALE } from './rocks.js';
+import { makeLook } from './styles.js';
+import { GroundMarks, SPILL_CAPACITY, TRACK_CAPACITY, TRACK_STEP, spillMaterial, trackMaterial } from './groundMarks.js';
 
 // The dig site from the notebook sketch, built only from boxes, cylinders and spheres:
 // a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks.
@@ -26,6 +28,17 @@ const HOME = { x: 190, z: -30 }; // where the excavator stands in the model, fac
 const WHEEL_RADIUS = 52;
 const HALF_TRACK = 85; // from the excavator's centre line to each row of wheels
 const WORKER_HOME = { x: -150, z: 240, facing: deg(-20) }; // he faces his local +Z
+// What each colour is, for looks that treat parts differently (src/styles.js).
+const ROLES = new Map([
+  [TYRE, 'tyre'],
+  [HUB, 'metal'],
+  [STEEL, 'metal'],
+  [TEETH, 'metal'],
+  [DARK, 'dark'],
+  [SKIN, 'skin'],
+  [HAT, 'hat'],
+  [EYE, 'eye'],
+]);
 
 /**
  * The excavator's dig cycle, as joint angles (degrees, on top of the modelled pose) at
@@ -93,35 +106,41 @@ function maxJointSpeed() {
  * purpose), `armLowest` the moving arm's lowest point (the bucket must never go below
  * the table, 0). `animate(t, dig)` poses the arm for dig time `dig` and the heads for
  * time `t` (seconds) and returns digPose(dig). Shadow meshes are marked with
- * `userData.shadow`. `shadowTexture` defaults to a soft radial gradient (needs a DOM canvas).
+ * `userData.shadow`, things lying flat on the table (marks, the diorama's ground) with
+ * `userData.ground`. `shadowTexture` defaults to a soft radial gradient (needs a DOM
+ * canvas). `style` is the look (src/styles.js).
  *
  * For driving (src/excavatorDrive.js), in the model frame (design units, the frame the
  * excavator moves in): `home` is where the excavator starts ({ x, z, heading }),
  * `bodyRadius` the circle round its centre that holds its body however it turns and
- * swings (the arm left out), `obstacles` the circles { x, z, r } round the worker and the
- * rock pile, and `origin` the site's own origin. `setDrive(state)` moves the excavator.
+ * swings (the arm left out), `workerHome`/`workerRadius` the same for the worker, `rocks`
+ * the rocks (src/rocks.js), `origin` the site's own origin, `marks` its tracks and spills
+ * (src/groundMarks.js) and `wheels` where the wheels are, for the tracks.
+ * `setDrive(state)` moves the excavator, `setWorker(state, swing)` the worker.
  */
-export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
+export function createDigSite({ shadowTexture = createShadowTexture(), style = 'plain' } = {}) {
+  // Every material and shape comes from the look (src/styles.js); 'standard' is the plain one.
+  const look = makeLook(style);
   const model = new THREE.Group(); // design units
-  const paint = new THREE.MeshStandardMaterial({ color: PAINT, roughness: 0.55 });
+  const paint = look.material(PAINT, 'paint');
   const materials = new Map();
-  const material = (m) => {
+  const material = (m, role = ROLES.get(m) ?? 'cloth') => {
     if (typeof m !== 'number') return m;
-    if (!materials.has(m)) materials.set(m, new THREE.MeshStandardMaterial({ color: m, roughness: 0.75 }));
-    return materials.get(m);
+    const key = `${m}:${role}`;
+    if (!materials.has(key)) materials.set(key, look.material(m, role));
+    return materials.get(key);
   };
 
-  const add = (parent, geometry, m, position, rotation) => {
-    const mesh = new THREE.Mesh(geometry, material(m));
+  const add = (parent, geometry, m, position, rotation, role) => {
+    const mesh = new THREE.Mesh(geometry, material(m, role));
     mesh.position.set(...position);
     if (rotation) mesh.rotation.set(...rotation);
     parent.add(mesh);
     return mesh;
   };
-  const box = (parent, [w, h, d], m, position, rotation) => add(parent, new THREE.BoxGeometry(w, h, d), m, position, rotation);
-  const cylinder = (parent, r, h, segments, m, position, rotation) =>
-    add(parent, new THREE.CylinderGeometry(r, r, h, segments), m, position, rotation); // axis along Y
-  const sphere = (parent, r, m, position) => add(parent, new THREE.SphereGeometry(r, 16, 12), m, position);
+  const box = (parent, [w, h, d], m, position, rotation) => add(parent, look.box(w, h, d), m, position, rotation);
+  const cylinder = (parent, r, h, segments, m, position, rotation) => add(parent, look.cylinder(r, h, segments), m, position, rotation); // axis along Y
+  const sphere = (parent, r, m, position) => add(parent, look.sphere(r), m, position);
   // A box stretched between two points in the XY plane, at the first point's z.
   const beam = (parent, [ax, ay, z = 0], [bx, by], thick, depth, m) =>
     box(parent, [Math.hypot(bx - ax, by - ay) + thick / 2, thick, depth], m, [(ax + bx) / 2, (ay + by) / 2, z], [0, 0, Math.atan2(by - ay, bx - ax)]);
@@ -252,14 +271,15 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
     [-315, 100, 46, 30, 40, 0, 40, 6, 0xa39a8c],
     [-435, 90, 60, 42, 52, 10, 5, 0, 0x8a8174],
   ];
-  const rockList = ROCKS.map(([x, z, w, h, d, rx, ry, rz, colour]) => ({
-    mesh: box(model, [w, h, d], colour, [x, h / 2 - 2, z], [deg(rx), deg(ry), deg(rz), 'YXZ']),
+  const rock = ([w, h, d], colour, position, rotation, i) => ({
+    mesh: add(model, look.rock(w, h, d, i), colour, position, rotation, 'rock'),
     w,
     h,
     d,
-  }));
+  });
+  const rockList = ROCKS.map(([x, z, w, h, d, rx, ry, rz, colour], i) => rock([w, h, d], colour, [x, h / 2 - 2, z], [deg(rx), deg(ry), deg(rz), 'YXZ'], i));
   // One on top of the pile.
-  rockList.push({ mesh: box(model, [40, 30, 36], 0x9c9386, [-395, 48, 62], [0, deg(30), deg(-12), 'YXZ']), w: 40, h: 30, d: 36 });
+  rockList.push(rock([40, 30, 36], 0x9c9386, [-395, 48, 62], [0, deg(30), deg(-12), 'YXZ'], ROCKS.length));
 
   // Soft contact shadows, [x, z, width, depth] in the model frame with the excavator at
   // home: each is the ellipse inscribed in that box. The excavator's drives with it, the
@@ -419,6 +439,7 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
   const workerRadius = circleAround(flatPoints(worker, null, shadowOf('worker')), WORKER_HOME).r;
 
   const shadowMaterial = new THREE.MeshBasicMaterial({ map: shadowTexture, transparent: true, depthWrite: false, toneMapped: false });
+  look.shadow(shadowMaterial);
   const shadowGeometry = new THREE.PlaneGeometry(1, 1);
   const rocks = new Rocks({ model, rocks: rockList, bucket, inside: new THREE.Vector3(-65, -40, 0), shadowMaterial, shadowGeometry });
   for (const { at, parent } of shadows) {
@@ -429,6 +450,31 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
     shadow.scale.set(w, d, 1);
     shadow.userData.shadow = true;
     parent.add(shadow);
+  }
+
+  // The look's extras (outlines, edges, dirt), after the measuring: they don't count.
+  const pile = { x: -380, z: 55 };
+  look.decorate({
+    model,
+    centre: { x: cx, z: cz },
+    radius,
+    pile,
+    clear: [
+      { ...HOME, r: bodyRadius },
+      { ...WORKER_HOME, r: workerRadius },
+      { ...pile, r: 130 },
+    ],
+  });
+
+  // What the excavator leaves on the table (src/groundMarks.js): kept in every look, so
+  // switching looks keeps them, but only shown in looks that want them.
+  const marks = {
+    tracks: new GroundMarks({ capacity: TRACK_CAPACITY, material: trackMaterial(), y: 0.3, size: [TRACK_STEP + 6, 34] }),
+    spills: new GroundMarks({ capacity: SPILL_CAPACITY, material: spillMaterial(), y: 0.5, tinted: true }),
+  };
+  for (const { mesh } of Object.values(marks)) {
+    mesh.visible = look.marks;
+    model.add(mesh);
   }
 
   model.position.set(-cx, 0, -cz);
@@ -455,6 +501,8 @@ export function createDigSite({ shadowTexture = createShadowTexture() } = {}) {
     workerHome: { ...WORKER_HOME },
     workerRadius,
     origin: { x: cx, z: cz },
+    marks,
+    wheels: { halfTrack: HALF_TRACK, axle: 130 },
   };
 }
 

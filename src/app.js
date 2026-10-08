@@ -3,6 +3,8 @@ import { StatusPanel } from './statusPanel.js';
 import { XrMenu } from './xrMenu.js';
 import { FrameTrace } from './frameTrace.js';
 import { DIG_CYCLE_S, DIG_KEYS, SITE_UNIT, createDigSite, digPose } from './digSite.js';
+import { STYLES } from './styles.js';
+import { noTread, treadMarks } from './groundMarks.js';
 import { SoftOcclusion } from './occlusion.js';
 import { SiteSound } from './siteSound.js';
 import { PlacementMemory } from './placementMemory.js';
@@ -11,6 +13,7 @@ import { nextHue, readLeftStick, readRightController, viewerHeading } from './co
 import {
   STEERING_MODES,
   driveLoad,
+  fits,
   forwardOf,
   intoFrame,
   outOfFrame,
@@ -38,6 +41,8 @@ const PLACED_HINT_MS = 4000; // how long the 'placed' hint stays up once the sit
 const SEEN_ANGLE = (40 * Math.PI) / 180; // site within this angle of the gaze counts as seen
 const STEERING_KEY = 'tableCube.steering'; // localStorage: 'relative' (default) or 'absolute'
 const PAINT_KEY = 'tableCube.paintHue'; // localStorage: the excavator's paint hue, 0..1
+const LOOK_KEY = 'tableCube.look'; // localStorage: the dig site's look, one of LOOK_NAMES
+const LOOK_NAMES = ['diorama', 'plain']; // the menu's Look button goes round these; the first is the default
 const WORKER_HEIGHT = 260; // design units: arm points higher than this pass over the worker's head
 const ARM_THREAT_RADIUS = 25; // design units round each arm point the worker keeps clear of
 
@@ -95,39 +100,31 @@ export function initApp() {
   // the dig site spins on top of it.
   const anchor = new THREE.Group();
   anchor.visible = false;
-  const {
-    site,
-    paint,
-    radius: siteRadius,
-    height: siteHeight,
-    excavator,
-    animate: animateSite,
-    setDrive,
-    setWorker,
-    armPoints,
-    teeth,
-    rocks,
-    home: excavatorHome,
-    bodyRadius,
-    workerHome,
-    workerRadius,
-    origin: siteOrigin,
-  } = createDigSite();
+  // The dig site in each look (src/styles.js): diorama and plain, switched on the menu, or
+  // one sketch picked with ?style= on the dev server. All are built up front, so switching
+  // in AR compiles and uploads nothing; `dig` is the one shown.
+  const devStyle = import.meta.env.DEV ? new URLSearchParams(location.search).get('style') : null;
+  const lookNames = STYLES.includes(devStyle) ? [devStyle] : LOOK_NAMES;
+  const digs = new Map(lookNames.map((name) => [name, createDigSite({ style: name })]));
+  let lookName = lookNames.includes(loadString(LOOK_KEY)) ? loadString(LOOK_KEY) : lookNames[0];
+  let dig = digs.get(lookName);
   // Real things in front of the dig site hide it, softly (src/occlusion.js).
   const occlusion = new SoftOcclusion(renderer);
   if (import.meta.env.DEV && new URLSearchParams(location.search).get('occlusion') === 'debug') occlusion.debug = true;
-  site.traverse((o) => {
-    if (o.isMesh) occlusion.apply(o.material);
-  });
-  anchor.add(site);
-  scene.add(anchor);
-  // Holding B on the right controller cycles the excavator's paint; the colour is remembered.
-  const paintHsl = paint.color.getHSL({ h: 0, s: 0, l: 0 }, THREE.SRGBColorSpace);
-  const savedHue = loadNumber(PAINT_KEY);
-  if (savedHue !== null && savedHue >= 0 && savedHue < 1) {
-    paintHsl.h = savedHue;
-    paint.color.setHSL(paintHsl.h, paintHsl.s, paintHsl.l, THREE.SRGBColorSpace);
+  for (const d of digs.values()) {
+    d.site.traverse((o) => {
+      if (o.isMesh || o.isLine) occlusion.apply(o.material);
+    });
+    d.site.visible = d === dig;
+    anchor.add(d.site);
   }
+  scene.add(anchor);
+  // Holding B on the right controller cycles the excavator's paint. The hue is remembered
+  // and shared by the looks; each keeps its own saturation and lightness.
+  const paintShades = new Map([...digs.values()].map((d) => [d, d.paint.color.getHSL({ h: 0, s: 0, l: 0 }, THREE.SRGBColorSpace)]));
+  const savedHue = loadNumber(PAINT_KEY);
+  let paintHue = savedHue !== null && savedHue >= 0 && savedHue < 1 ? savedHue : null; // null: each look's own colour
+  applyPaint();
   // How the left stick steers (src/excavatorDrive.js), switched on the menu and remembered.
   let steering = loadSteering();
   // The table the site was on and everything on it, kept between sessions.
@@ -138,7 +135,7 @@ export function initApp() {
 
   // Exit AR / Reload page / "Updated …", above the left hand (src/xrMenu.js).
   // Engine, hydraulics and rocks, from the excavator (src/siteSound.js).
-  const sound = new SiteSound({ emitter: excavator, camera });
+  const sound = new SiteSound({ emitter: dig.excavator, camera });
 
   const menu = new XrMenu({
     onExit: () => endAR(),
@@ -153,6 +150,7 @@ export function initApp() {
       showSteeringLabel();
       console.info(`[drive] steering: ${steering}`);
     },
+    onLook: () => setLook(lookNames[(lookNames.indexOf(lookName) + 1) % lookNames.length]),
     // Back to how the dig site started, on the same table (the remembered one is replaced).
     onReset: () => {
       resetSite();
@@ -161,8 +159,10 @@ export function initApp() {
   });
   const showSoundLabel = () => menu.setLabel('sound', sound.muted ? 'Sound off' : 'Sound on');
   const showSteeringLabel = () => menu.setLabel('steering', `Steering: ${steering}`);
+  const showLookLabel = () => menu.setLabel('look', `Look: ${lookName}`);
   showSoundLabel();
   showSteeringLabel();
+  showLookLabel();
   scene.add(menu.root);
 
   const tracker = new TableTracker();
@@ -176,11 +176,12 @@ export function initApp() {
     lockId: null, // tracker.lockId of the table the site is on; a change means a new table
     lockedAt: 0,
     seenAt: null, // when the site was first in view since the last table change
-    drive: parkedAt(excavatorHome), // where the excavator is and how it's moving (src/excavatorDrive.js)
+    drive: parkedAt(dig.home), // where the excavator is and how it's moving (src/excavatorDrive.js)
     digTime: 0, // seconds into the dig cycle: it only runs while A is held
     digging: false,
     lastPhase: digPose(0).phase, // the dig phase last frame: scoops and dumps happen as it changes
-    worker: standingAt(workerHome), // where the worker is and what he's doing (src/worker.js)
+    worker: standingAt(dig.workerHome), // where the worker is and what he's doing (src/worker.js)
+    tread: noTread(), // how far each wheel row has rolled since its last track mark (src/groundMarks.js)
     restored: false, // the site was put back as it was saved in an earlier session
     repainting: false,
     roomCaptureUsed: false,
@@ -409,16 +410,16 @@ export function initApp() {
         if (kept && kept === memory.current) {
           // The same site, back after its table dropped out for a while (the headset was
           // off): what's in hand is newer than anything saved.
-          site.rotation.y = snapQuarterTurn(kept.pose.yaw - table.top.yaw);
+          dig.site.rotation.y = snapQuarterTurn(kept.pose.yaw - table.top.yaw);
         } else if (kept?.state) {
           memory.select(kept); // saves the site being left first
-          site.rotation.y = snapQuarterTurn(kept.pose.yaw - table.top.yaw);
+          dig.site.rotation.y = snapQuarterTurn(kept.pose.yaw - table.top.yaw);
           applySiteState(kept.state);
           run.restored = true;
           console.info('[memory] put the dig site back as it was');
         } else {
           memory.select(kept ?? null);
-          site.rotation.y = quarterTurnToward(run.viewer, table.top.center, table.top.yaw);
+          dig.site.rotation.y = quarterTurnToward(run.viewer, table.top.center, table.top.yaw);
           resetSite();
         }
         logTablePick(table, candidates);
@@ -427,13 +428,13 @@ export function initApp() {
       run.digging = Boolean(right?.aPressed);
       if (run.digging) run.digTime += dt; // holding A digs; letting go stops the arm where it is
       placeSite(table.top);
-      run.digPose = animateSite(time / 1000, run.digTime);
+      run.digPose = dig.animate(time / 1000, run.digTime);
       moveRocks(table.top, dt);
       moveWorker(table.top, dt);
       if (run.digging) tracker.confirm(); // the user is working with this table: keep it
       if (!tracker.provisional) {
         const at = anchorPosition(table.top);
-        memory.keep(frame, refSpace, { ...at, yaw: table.top.yaw + site.rotation.y }, siteState, time);
+        memory.keep(frame, refSpace, { ...at, yaw: table.top.yaw + dig.site.rotation.y }, siteState, time);
       }
       if (run.seenAt === null && run.viewer && viewAngleTo(siteCentre(table.top), run.viewer) <= SEEN_ANGLE) {
         run.seenAt = time;
@@ -505,24 +506,52 @@ export function initApp() {
   // released, and is remembered.
   function repaint(controller, dt) {
     const pressed = Boolean(controller?.bPressed);
-    if (run.repainting && !pressed) saveStorage(PAINT_KEY, String(paintHsl.h));
+    if (run.repainting && !pressed) saveStorage(PAINT_KEY, String(paintHue));
     run.repainting = pressed;
     if (!pressed) return;
-    paintHsl.h = nextHue(paintHsl.h, dt);
-    paint.color.setHSL(paintHsl.h, paintHsl.s, paintHsl.l, THREE.SRGBColorSpace);
+    paintHue = nextHue(paintHue ?? paintShades.get(dig).h, dt);
+    applyPaint();
+  }
+
+  // Every look's paint takes the chosen hue, in its own shade.
+  function applyPaint() {
+    if (paintHue === null) return;
+    for (const [d, shade] of paintShades) d.paint.color.setHSL(paintHue, shade.s, shade.l, THREE.SRGBColorSpace);
+  }
+
+  // Shows the dig site in another look, with everything on it as it was.
+  function setLook(name) {
+    if (!digs.has(name) || name === lookName) return;
+    const state = siteState();
+    const { restored } = run;
+    const spin = dig.site.rotation.y;
+    dig.site.visible = false;
+    dig = digs.get(name);
+    lookName = name;
+    dig.site.rotation.y = spin;
+    dig.site.visible = true;
+    applySiteState(state);
+    run.restored = restored;
+    sound.setEmitter(dig.excavator);
+    saveStorage(LOOK_KEY, name);
+    showLookLabel();
+    console.info(`[look] ${name}`);
   }
 
   // The dig site as it was built: the excavator parked with its arm at rest, the rocks in
   // their pile and the worker where he stood.
   function resetSite() {
     run.restored = false; // whatever was put back is gone now
-    run.drive = parkedAt(excavatorHome);
+    run.drive = parkedAt(dig.home);
     run.digTime = 0;
     run.lastPhase = digPose(0).phase;
-    rocks.reset();
-    run.worker = standingAt(workerHome);
-    setDrive(run.drive);
-    setWorker(run.worker);
+    dig.rocks.reset();
+    dig.marks.tracks.reset();
+    dig.marks.spills.reset();
+    run.tread = noTread();
+    run.worker = standingAt(dig.workerHome);
+    dig.setDrive(run.drive);
+    dig.setWorker(run.worker);
   }
 
   // Everything on the dig site that's remembered between sessions (src/placementMemory.js),
@@ -531,8 +560,10 @@ export function initApp() {
     const d = run.drive;
     return {
       excavator: { x: d.x, z: d.z, heading: wrapAngle(d.heading), swing: wrapAngle(d.swing), digTime: run.digTime % DIG_CYCLE_S },
-      rocks: rocks.state(),
+      rocks: dig.rocks.state(),
       worker: { x: run.worker.x, z: run.worker.z, facing: run.worker.facing },
+      tracks: dig.marks.tracks.state(),
+      spills: dig.marks.spills.state(),
     };
   }
 
@@ -545,17 +576,19 @@ export function initApp() {
       run.digTime = Math.max(0, e.digTime);
       run.lastPhase = digPose(run.digTime).phase; // no scoop or dump just for coming back
     }
-    rocks.restore(saved?.rocks);
+    dig.rocks.restore(saved?.rocks);
+    dig.marks.tracks.restore(saved?.tracks);
+    dig.marks.spills.restore(saved?.spills);
     const w = saved?.worker;
     if (w && ['x', 'z', 'facing'].every((k) => Number.isFinite(w[k]))) run.worker = standingAt(w);
-    setDrive(run.drive);
-    animateSite(0, run.digTime);
-    setWorker(run.worker);
+    dig.setDrive(run.drive);
+    dig.animate(0, run.digTime);
+    dig.setWorker(run.worker);
   }
 
   // What the excavator mustn't drive into: the rocks lying about and the worker.
   function siteObstacles() {
-    return [...rocks.obstacles(), { x: run.worker.x, z: run.worker.z, r: workerRadius }];
+    return [...dig.rocks.obstacles(), { x: run.worker.x, z: run.worker.z, r: dig.workerRadius }];
   }
 
   // The dig cycle moves rocks: starting a scoop picks up the top rock near the teeth, and
@@ -563,38 +596,46 @@ export function initApp() {
   function moveRocks(top, dt) {
     const phase = run.digPose.phase;
     if (phase !== run.lastPhase) {
-      if (run.lastPhase === 'scoop') rocks.carry(1); // the scoop's done: the rock rides in the bucket
-      if (phase === 'scoop') rocks.scoop(teeth());
+      if (run.lastPhase === 'scoop') dig.rocks.carry(1); // the scoop's done: the rock rides in the bucket
+      if (phase === 'scoop') {
+        const teeth = dig.teeth();
+        dig.rocks.scoop(teeth);
+        // A dug patch where the bucket bit, turned the way the bucket faces, if it's over the table.
+        const d = run.drive;
+        if (fits(teeth, 0, driveArea(top))) dig.marks.spills.add({ x: teeth.x, z: teeth.z, yaw: d.heading + d.swing, length: 110, width: 95, tone: 1 });
+      }
       if (phase === 'return') {
         const area = driveArea(top);
-        rocks.dump({ contains: (x, z, r) => settle({ x, z }, r, area) }); // it lands on the table
+        dig.rocks.dump({ contains: (x, z, r) => settle({ x, z }, r, area) }); // it lands on the table
       }
       run.lastPhase = phase;
     }
     if (phase === 'scoop') {
       const [start, end] = [DIG_KEYS[1].t, DIG_KEYS[2].t];
-      rocks.carry(((run.digTime % DIG_CYCLE_S) - start) / (end - start));
+      dig.rocks.carry(((run.digTime % DIG_CYCLE_S) - start) / (end - start));
     }
-    rocks.update(dt);
+    for (const r of dig.rocks.update(dt)) {
+      dig.marks.spills.add({ x: r.x, z: r.z, yaw: r.x * 0.07, length: r.w * 1.9, width: r.d * 1.9 }); // dirt where it lands
+    }
   }
 
   // The worker watches the excavator and walks out of the way of its arm (low enough to
   // hit him), now or where the swing and the drive will take it, and of the machine itself.
   function moveWorker(top, dt) {
     const d = run.drive;
-    const arm = armPoints().filter((p) => p.y < WORKER_HEIGHT);
+    const arm = dig.armPoints().filter((p) => p.y < WORKER_HEIGHT);
     const body = { x: d.x, z: d.z };
     const ahead = (points) => [points, ...LOOKAHEADS_S.map((s) => predictPoints(points, d, s))].flat();
     const threats = [
       ...ahead(arm).map((p) => ({ x: p.x, z: p.z, r: ARM_THREAT_RADIUS })),
-      ...ahead([body]).map((p) => ({ x: p.x, z: p.z, r: bodyRadius })),
+      ...ahead([body]).map((p) => ({ x: p.x, z: p.z, r: dig.bodyRadius })),
     ];
     run.worker = stepWorker(
       run.worker,
-      { threats, watch: body, radius: workerRadius, area: driveArea(top), obstacles: [...rocks.obstacles(), { ...body, r: bodyRadius }] },
+      { threats, watch: body, radius: dig.workerRadius, area: driveArea(top), obstacles: [...dig.rocks.obstacles(), { ...body, r: dig.bodyRadius }] },
       dt,
     );
-    setWorker(run.worker, limbSwing(run.worker));
+    dig.setWorker(run.worker, limbSwing(run.worker));
   }
 
   // The left stick drives the excavator round the table, the right stick swings its cab
@@ -608,12 +649,16 @@ export function initApp() {
         stick: leftStick,
         swingStick: right?.stick ?? null,
         mode: steering,
-        viewHeading: worldHeading && intoFrame(worldHeading, top.yaw + site.rotation.y),
+        viewHeading: worldHeading && intoFrame(worldHeading, top.yaw + dig.site.rotation.y),
       },
-      { area: driveArea(top), radius: bodyRadius, obstacles: siteObstacles() },
+      { area: driveArea(top), radius: dig.bodyRadius, obstacles: siteObstacles() },
       dt,
     );
-    setDrive(run.drive);
+    dig.setDrive(run.drive);
+    // The tyres leave tracks.
+    const tread = treadMarks(before, run.drive, run.tread, dig.wheels);
+    run.tread = tread.carry;
+    for (const mark of tread.marks) dig.marks.tracks.add(mark);
     const d = run.drive;
     if (d.x !== before.x || d.z !== before.z || d.heading !== before.heading || d.swing !== before.swing) tracker.confirm(); // keep this table
   }
@@ -623,9 +668,9 @@ export function initApp() {
   function driveArea(top) {
     const unitsPerMetre = 1 / (SITE_UNIT * siteScale(top));
     return {
-      cx: siteOrigin.x,
-      cz: siteOrigin.z,
-      angle: site.rotation.y,
+      cx: dig.origin.x,
+      cz: dig.origin.z,
+      angle: dig.site.rotation.y,
       halfX: (top.width / 2) * unitsPerMetre,
       halfZ: (top.depth / 2) * unitsPerMetre,
     };
@@ -649,12 +694,12 @@ export function initApp() {
 
   // Full size, or smaller when the table is too small for the site's footprint.
   function siteScale(top) {
-    return Math.min(1, (Math.min(top.width, top.depth) * SITE_FIT) / (2 * siteRadius));
+    return Math.min(1, (Math.min(top.width, top.depth) * SITE_FIT) / (2 * dig.radius));
   }
 
   function siteCentre(top) {
     const base = anchorPosition(top);
-    return { x: base.x, y: base.y + (siteHeight * siteScale(top)) / 2, z: base.z };
+    return { x: base.x, y: base.y + (dig.height * siteScale(top)) / 2, z: base.z };
   }
 
   function placeSite(top) {
@@ -672,8 +717,8 @@ export function initApp() {
     const d = run.drive;
     const scale = top ? siteScale(top) : 1;
     const metres = SITE_UNIT * scale;
-    const p = excavator.getWorldPosition(new THREE.Vector3());
-    const forward = outOfFrame(forwardOf(d.heading), anchor.rotation.y + site.rotation.y); // site frame -> room
+    const p = dig.excavator.getWorldPosition(new THREE.Vector3());
+    const forward = outOfFrame(forwardOf(d.heading), anchor.rotation.y + dig.site.rotation.y); // site frame -> room
     const onTable = top && intoFrame({ x: p.x - top.center.x, z: p.z - top.center.z }, top.yaw);
     return {
       position: p.toArray(),
@@ -682,12 +727,12 @@ export function initApp() {
       swing: d.swing,
       speed: d.speed * metres,
       onTable: onTable && { x: onTable.x, z: onTable.z },
-      limits: top && { x: Math.max(0, top.width / 2 - bodyRadius * metres), z: Math.max(0, top.depth / 2 - bodyRadius * metres) },
-      radius: bodyRadius * metres,
+      limits: top && { x: Math.max(0, top.width / 2 - dig.bodyRadius * metres), z: Math.max(0, top.depth / 2 - dig.bodyRadius * metres) },
+      radius: dig.bodyRadius * metres,
       blocked: Boolean(d.blocked),
-      atHome: d.x === excavatorHome.x && d.z === excavatorHome.z && d.heading === excavatorHome.heading && d.swing === 0,
+      atHome: d.x === dig.home.x && d.z === dig.home.z && d.heading === dig.home.heading && d.swing === 0,
       // Gap between its body circle and the nearest of the worker and the rocks.
-      clearance: Math.min(...siteObstacles().map((o) => Math.hypot(d.x - o.x, d.z - o.z) - bodyRadius - o.r)) * metres,
+      clearance: Math.min(...siteObstacles().map((o) => Math.hypot(d.x - o.x, d.z - o.z) - dig.bodyRadius - o.r)) * metres,
       digTime: run.digTime,
       digging: run.digging,
       steering,
@@ -697,12 +742,12 @@ export function initApp() {
   // The rocks in the model frame (design units: 0.5 mm at full size), and how many have
   // been moved from the pile they started in.
   function rocksSnapshot() {
-    const state = rocks.state();
+    const state = dig.rocks.state();
     const moved = state.filter((s, i) => {
-      const start = rocks.initial[i];
+      const start = dig.rocks.initial[i];
       return s.carried || Math.hypot(s.x - start.x, s.z - start.z) > 5;
     }).length;
-    return { state, moved, busy: rocks.busy };
+    return { state, moved, busy: dig.rocks.busy };
   }
 
   // Where the worker is (room, metres) and how close the excavator's arm is to him.
@@ -710,22 +755,22 @@ export function initApp() {
     const w = run.worker;
     const top = lockedTop();
     const metres = SITE_UNIT * (top ? siteScale(top) : 1);
-    const arm = armPoints().filter((p) => p.y < WORKER_HEIGHT).map((p) => ({ x: p.x, z: p.z, r: ARM_THREAT_RADIUS }));
+    const arm = dig.armPoints().filter((p) => p.y < WORKER_HEIGHT).map((p) => ({ x: p.x, z: p.z, r: ARM_THREAT_RADIUS }));
     return {
       x: w.x,
       z: w.z,
       facing: w.facing,
       walking: Boolean(w.target),
       // Gap between him and the nearest low part of the arm, in metres.
-      armGap: (nearestThreat(w, workerRadius, arm)?.gap ?? Infinity) * metres,
+      armGap: (nearestThreat(w, dig.workerRadius, arm)?.gap ?? Infinity) * metres,
     };
   }
 
   // World-space box round the site's solid parts (not its shadows), for the e2e test.
   function solidBounds() {
     const box = new THREE.Box3();
-    site.traverse((o) => {
-      if (o.isMesh && !o.userData.shadow) box.expandByObject(o, true);
+    dig.site.traverse((o) => {
+      if (o.isMesh && !o.userData.shadow && !o.userData.ground) box.expandByObject(o, true);
     });
     return box3ToArrays(box);
   }
@@ -886,13 +931,15 @@ export function initApp() {
         visible: anchor.visible,
         position: anchor.getWorldPosition(new THREE.Vector3()).toArray(), // its base, on the table surface
         scale: anchor.scale.x,
-        radius: siteRadius * anchor.scale.x,
+        radius: dig.radius * anchor.scale.x,
         yaw: anchor.rotation.y,
-        spin: site.rotation.y,
+        spin: dig.site.rotation.y,
         bounds: anchor.visible ? solidBounds() : null,
-        color: `#${paint.color.getHexString(THREE.SRGBColorSpace)}`,
+        color: `#${dig.paint.color.getHexString(THREE.SRGBColorSpace)}`,
         digPhase: run.digPose?.phase ?? null,
       },
+      look: lookName,
+      marks: { tracks: dig.marks.tracks.count, spills: dig.marks.spills.count },
       excavator: excavatorSnapshot(),
       rocks: rocksSnapshot(),
       worker: workerSnapshot(),
@@ -932,6 +979,15 @@ function loadSteering() {
     return localStorage.getItem(STEERING_KEY) === 'absolute' ? 'absolute' : 'relative';
   } catch {
     return 'relative'; // storage blocked
+  }
+}
+
+/** A string saved under `key`, or null. */
+function loadString(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null; // storage blocked
   }
 }
 
