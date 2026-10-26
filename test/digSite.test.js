@@ -127,3 +127,31 @@ test('the arm points run from the elbow to the teeth, and the worker can be pose
   site.setWorker({ x: 0, z: 0, facing: 1, headYaw: 0.5 }, 0.4);
   site.setWorker({ ...site.workerHome, headYaw: 0 }, 0);
 });
+
+test('the bucket shows the earth it carries, and drops it from inside, between the hinge and the teeth', () => {
+  const diorama = createDigSite({ shadowTexture: null, style: 'diorama' });
+  const loadMesh = diorama.site.getObjectByName('earth');
+  assert.ok(loadMesh, 'the dome of earth');
+  diorama.setLoad(0);
+  assert.equal(loadMesh.visible, false);
+  diorama.setLoad(0.7);
+  assert.equal(loadMesh.visible, true);
+  assert.ok(Math.abs(loadMesh.scale.y - 0.7) < 1e-9);
+  assert.equal(site.setLoad(0.7), undefined);
+  // The plain look never shows it.
+  assert.equal(site.site.getObjectByName('earth').visible, false);
+  site.setLoad(0);
+
+  diorama.animate(0, 4.6); // the end of the dump
+  const inside = diorama.bucketInside();
+  const teeth = diorama.teeth();
+  const hinge = diorama.armPoints()[4];
+  const between = (a, b, p) => Math.min(a.x, b.x) - 40 < p.x && p.x < Math.max(a.x, b.x) + 40;
+  assert.ok(between(hinge, teeth, inside), `inside ${inside.x} between hinge ${hinge.x} and teeth ${teeth.x}`);
+  assert.ok(inside.y > teeth.y, 'above the teeth when the bucket is open');
+  diorama.animate(0);
+  assert.equal(diorama.marks.heaps.count, 0);
+  assert.equal(diorama.marks.heaps.mesh.visible, true);
+  assert.equal(site.marks.heaps.mesh.visible, false);
+  assert.equal(typeof diorama.rocks.groundAt, 'function');
+});

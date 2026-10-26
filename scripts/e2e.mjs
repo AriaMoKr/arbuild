@@ -919,6 +919,99 @@ const scenarios = {
     return `${diorama.marks.tracks} track marks, ${diorama.marks.spills} dirt marks; ${shots.join(', ')}`;
   },
 
+  async 'meeting room: digging fills the bucket, dumping builds heaps, scooping a heap takes it back, driving through one flattens it'(browser, base) {
+    await openApp(browser, base, 'emulate=1&env=meeting_room');
+    let s = await enterAR(browser);
+    if (s.excavator.load !== 0 || s.marks.heaps !== 0) throw new Error(`earth on a fresh site: ${JSON.stringify(s.marks)}`);
+    const left = 'window.__iwer.xrDevice.controllers.left';
+    const right = 'window.__iwer.xrDevice.controllers.right';
+    const stick = (controller, x, y, ms) =>
+      browser.evaluate(`(async () => {
+        ${controller}.updateAxes('thumbstick', ${x}, ${y});
+        await new Promise((r) => setTimeout(r, ${ms}));
+        ${controller}.updateAxes('thumbstick', 0, 0);
+        await new Promise((r) => setTimeout(r, 600));
+      })()`);
+    const holdA = async (phase) => {
+      await browser.evaluate(`${right}.updateButtonValue('a-button', 1)`);
+      await browser.waitFor(`window.__app.snapshot().site.digPhase === '${phase}'`, { timeout: 8000, label: `dig phase ${phase}` });
+      await sleep(250);
+      await browser.evaluate(`${right}.updateButtonValue('a-button', 0)`);
+      await sleep(100);
+      return snapshot(browser);
+    };
+
+    // Swing the cab right, over bare dirt (no rocks there): a scoop fills the bucket.
+    await stick(right, 1, 0, 1500);
+    s = await holdA('lift');
+    if (!(s.excavator.load > 0.9)) throw new Error(`after a scoop the bucket holds ${s.excavator.load}`);
+    if (s.rocks.state.some((r) => r.carried)) throw new Error('a rock came up with the earth: wrong spot');
+    const dug = s.marks.spills;
+    if (dug < 1) throw new Error('no dug patch');
+
+    // Swing back a little and dump: the earth is a heap under the bucket, and the bucket is empty.
+    await stick(right, -1, 0, 800);
+    s = await holdA('return');
+    await sleep(300);
+    s = await snapshot(browser);
+    if (s.marks.heaps !== 1 || !(s.marks.earth > 0.9)) throw new Error(`after the dump: ${JSON.stringify(s.marks)}`);
+    if (s.excavator.load > 0.05) throw new Error(`the bucket still holds ${s.excavator.load}`);
+
+    // The same again: the second load joins the heap.
+    await stick(right, 1, 0, 800);
+    await holdA('lift');
+    await stick(right, -1, 0, 800);
+    s = await holdA('return');
+    await sleep(300);
+    s = await snapshot(browser);
+    if (s.marks.heaps !== 1 || !(s.marks.earth > 1.9)) throw new Error(`after a second dump there: ${JSON.stringify(s.marks)}`);
+
+    // Scooping where the heap is takes earth back out of it (no dug patch); dumping it there puts it back.
+    const dugSoFar = s.marks.spills;
+    s = await holdA('lift');
+    if (!(s.excavator.load > 0.9) || !(s.marks.earth < 1.1)) throw new Error(`scooping the heap: load ${s.excavator.load}, earth left ${s.marks.earth}`);
+    if (s.marks.spills !== dugSoFar) throw new Error('scooping a heap dug a patch too');
+    s = await holdA('return');
+    await sleep(300);
+    s = await snapshot(browser);
+    if (s.marks.heaps !== 1 || !(s.marks.earth > 1.9)) throw new Error(`after dumping it back: ${JSON.stringify(s.marks)}`);
+    await browser.evaluate(`(() => {
+      const d = window.__iwer.xrDevice;
+      d.position.set(0.069, 1.25, -0.95);
+      const pitch = -40 * Math.PI / 180;
+      d.quaternion.set(Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2));
+    })()`);
+    await sleep(500);
+    const shot = await browser.screenshot('earth-heap');
+
+    // Turn the chassis towards the heap and drive through it: flattened to a spill.
+    const spillsBefore = s.marks.spills;
+    await stick(left, 1, 0, 900);
+    await stick(left, 0, -1, 4000);
+    s = await snapshot(browser);
+    if (s.marks.heaps !== 0) throw new Error(`driving through left ${s.marks.heaps} heap(s): ${JSON.stringify(s.marks)}`);
+    if (!(s.marks.spills > spillsBefore)) throw new Error('flattening left no spill');
+
+    // Everything about the earth is remembered.
+    await stick(right, 1, 0, 700);
+    s = await holdA('lift'); // a load in the bucket, to remember
+    await sleep(1500);
+    const before = s;
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    await openApp(browser, base, 'emulate=1&env=meeting_room', { remember: true });
+    await enterAR(browser);
+    await browser.waitFor('window.__app.snapshot().memory.restored', { timeout: 5000, label: 'restored' });
+    s = await snapshot(browser);
+    if (Math.abs(s.excavator.load - before.excavator.load) > 0.02 || s.marks.heaps !== before.marks.heaps || s.marks.spills !== before.marks.spills) {
+      throw new Error(`after the reload: load ${s.excavator.load} (was ${before.excavator.load}), ${JSON.stringify(s.marks)} (was ${JSON.stringify(before.marks)})`);
+    }
+    await browser.evaluate('window.__app.endAR()');
+    await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
+    assertNoProblems(browser);
+    return `a heap of 2 loads, scooped back and re-dumped, then flattened; a load of ${before.excavator.load} remembered; ${shot}`;
+  },
+
   async 'meeting room: a thing lying on the table shows through the dirt'(browser, base) {
     // A controller lying on the desk (3 cm thick) looked buried in the diorama's dirt: the
     // normal tolerance (hidden from 2 cm, fully at 5 cm) left the dirt half over it. Things

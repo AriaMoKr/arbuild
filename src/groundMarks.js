@@ -2,15 +2,21 @@ import * as THREE from 'three';
 import { outOfFrame } from './excavatorDrive.js';
 
 // What the dig site leaves on the table in the diorama look: tyre tracks where the
-// excavator drives, a dug patch where the bucket scoops and dirt where a rock lands. They
-// are flat marks just above the table, in the model frame (design units), each kind one
-// InstancedMesh with a fixed number of slots: when it's full, the oldest mark goes. Unused
-// slots are scaled to nothing, so the count never changes and nothing new is uploaded in
-// AR. The marks are part of the saved dig site (state()/restore()).
+// excavator drives, a dug patch where the bucket scoops, dirt where a rock lands, and
+// heaps of earth where the bucket dumps. The marks are flat, just above the table, the
+// heaps are mounds; all in the model frame (design units), each kind one InstancedMesh
+// with a fixed number of slots (when the marks are full the oldest goes; heaps join the
+// nearest). Unused slots are scaled to nothing, so the count never changes and nothing new
+// is uploaded in AR. They're all part of the saved dig site (state()/restore()).
 
 export const TRACK_STEP = 30; // units each wheel row rolls between tread marks
-export const TRACK_CAPACITY = 400; // about 3 m of driving
+export const TRACK_CAPACITY = 800; // about 6 m of driving
 export const SPILL_CAPACITY = 60;
+export const HEAP_CAPACITY = 40;
+export const HEAP_LOAD_RADIUS = 55; // units: the radius of a heap of one bucket load (2.75 cm at full size)
+const HEAP_HEIGHT = 0.45; // of its radius
+const HEAP_JOIN = 25; // earth dumped this close to a heap's edge joins it
+const HEAP_BASE_Y = 0.8; // above the marks (0.3, 0.5), under the contact shadows (1)
 const TRACK_WIDTH = 34; // the tyres' width
 
 /**
@@ -42,6 +48,145 @@ export function treadMarks(before, after, carry, { halfTrack, axle }) {
 
 /** A fresh `carry` for treadMarks. */
 export const noTread = () => ({ left: 0, right: 0 });
+
+/** The radius of a heap of `loads` bucket loads: its volume grows with the loads. */
+export function heapRadius(loads) {
+  return HEAP_LOAD_RADIUS * Math.cbrt(Math.max(loads, 0));
+}
+
+const UPRIGHT = new THREE.Quaternion();
+
+export class Heaps {
+  /** `geometry`: a mound of radius 1 and height 1 with a flat bottom at y = 0. */
+  constructor({ geometry, material, capacity = HEAP_CAPACITY }) {
+    this.capacity = capacity;
+    this.mesh = new THREE.InstancedMesh(geometry, material, capacity);
+    this.mesh.frustumCulled = false;
+    this.mesh.userData.ground = true;
+    this._m = new THREE.Matrix4();
+    this._p = new THREE.Vector3();
+    this._s = new THREE.Vector3();
+    this.reset();
+  }
+
+  /**
+   * `loads` bucket loads of earth dropped at (x, z): the heap there grows (its centre moves
+   * towards where the earth fell), or a new one starts. Returns the heap.
+   */
+  add(x, z, loads) {
+    if (!(loads > 0)) return null;
+    let heap = this._nearest(x, z, (h) => heapRadius(h.loads) + HEAP_JOIN);
+    if (!heap && this.heaps.length >= this.capacity) heap = this._nearest(x, z, () => Infinity);
+    if (heap) {
+      const total = heap.loads + loads;
+      heap.x += ((x - heap.x) * loads) / total;
+      heap.z += ((z - heap.z) * loads) / total;
+      heap.loads = total;
+    } else {
+      heap = { x, z, loads };
+      this.heaps.push(heap);
+    }
+    this._sync();
+    return heap;
+  }
+
+  /**
+   * The bucket bites at (x, z): takes up to `most` loads from the heap there (within its
+   * radius plus `slack`); returns what it took, 0 when there's no heap.
+   */
+  scoop(x, z, most = 1, slack = 30) {
+    const heap = this._nearest(x, z, (h) => heapRadius(h.loads) + slack);
+    if (!heap) return 0;
+    const taken = Math.min(most, heap.loads);
+    heap.loads -= taken;
+    if (heap.loads < 0.05) this.heaps.splice(this.heaps.indexOf(heap), 1);
+    this._sync();
+    return taken;
+  }
+
+  /** Flattens the heaps whose centres are within `r` of (x, z) (the excavator drove through); returns them. */
+  flatten(x, z, r) {
+    const gone = this.heaps.filter((h) => Math.hypot(h.x - x, h.z - z) < r);
+    if (gone.length) {
+      this.heaps = this.heaps.filter((h) => !gone.includes(h));
+      this._sync();
+    }
+    return gone;
+  }
+
+  /** How high the earth is at (x, z): the tallest heap there (a dome), or 0. */
+  heightAt(x, z) {
+    let height = 0;
+    for (const h of this.heaps) {
+      const r = heapRadius(h.loads);
+      const d = Math.hypot(h.x - x, h.z - z);
+      if (d < r) height = Math.max(height, HEAP_HEIGHT * r * (1 - (d / r) ** 2));
+    }
+    return height;
+  }
+
+  /** The heaps as circles { x, z, r }, for the worker to walk round. */
+  obstacles() {
+    return this.heaps.map((h) => ({ x: h.x, z: h.z, r: heapRadius(h.loads) }));
+  }
+
+  get count() {
+    return this.heaps.length;
+  }
+
+  /** All the earth in heaps, in bucket loads. */
+  get loads() {
+    return this.heaps.reduce((sum, h) => sum + h.loads, 0);
+  }
+
+  state() {
+    return this.heaps.map((h) => [round(h.x), round(h.z), round(h.loads, 2)]);
+  }
+
+  /** Puts back what state() gave (whatever doesn't make sense is skipped). */
+  restore(state) {
+    this.heaps = [];
+    if (Array.isArray(state)) {
+      for (const s of state.slice(0, this.capacity)) {
+        if (!Array.isArray(s) || s.length !== 3 || !s.every(Number.isFinite) || !(s[2] > 0)) continue;
+        this.heaps.push({ x: s[0], z: s[1], loads: s[2] });
+      }
+    }
+    this._sync();
+  }
+
+  reset() {
+    this.heaps = [];
+    this._sync();
+  }
+
+  _nearest(x, z, within) {
+    let best = null;
+    let bestDistance = Infinity;
+    for (const h of this.heaps) {
+      const d = Math.hypot(h.x - x, h.z - z);
+      if (d < within(h) && d < bestDistance) {
+        best = h;
+        bestDistance = d;
+      }
+    }
+    return best;
+  }
+
+  _sync() {
+    for (let i = 0; i < this.capacity; i++) {
+      const h = this.heaps[i];
+      if (h) {
+        const r = heapRadius(h.loads);
+        this._m.compose(this._p.set(h.x, HEAP_BASE_Y, h.z), UPRIGHT, this._s.set(r, HEAP_HEIGHT * r, r));
+      } else {
+        this._m.makeScale(0, 0, 0);
+      }
+      this.mesh.setMatrixAt(i, this._m);
+    }
+    this.mesh.instanceMatrix.needsUpdate = true;
+  }
+}
 
 export class GroundMarks {
   /** `size` is a mark's [length, width] unless add() gives its own; `y` its height. */
@@ -147,6 +292,16 @@ export function trackMaterial() {
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -2,
   });
+}
+
+/** Heaps of dumped earth: the diorama's dirt, mottled by the mound geometry's vertex colours. */
+export function heapMaterial() {
+  return new THREE.MeshStandardMaterial({ color: 0x8a6a46, roughness: 1, flatShading: true, vertexColors: true });
+}
+
+/** The earth in the bucket. */
+export function loadMaterial() {
+  return new THREE.MeshStandardMaterial({ color: 0x7d5f40, roughness: 1, flatShading: true });
 }
 
 /** Dug or spilt earth: a soft, ragged blob, darker where dug (instance tint). */

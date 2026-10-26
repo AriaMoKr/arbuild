@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Rocks, SHADOW_SCALE as ROCK_SHADOW_SCALE } from './rocks.js';
-import { makeLook } from './styles.js';
-import { GroundMarks, SPILL_CAPACITY, TRACK_CAPACITY, TRACK_STEP, spillMaterial, trackMaterial } from './groundMarks.js';
+import { makeLook, moundGeometry } from './styles.js';
+import { GroundMarks, Heaps, SPILL_CAPACITY, TRACK_CAPACITY, TRACK_STEP, heapMaterial, loadMaterial, spillMaterial, trackMaterial } from './groundMarks.js';
 
 // The dig site from the notebook sketch, built only from boxes, cylinders and spheres:
 // a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks.
@@ -223,6 +223,11 @@ export function createDigSite({ shadowTexture = createShadowTexture(), style = '
   box(bucket, [130, 4, 110], STEEL, [-65, -78, 0]);
   for (const z of [-53, 53]) box(bucket, [130, 80, 4], STEEL, [-65, -40, z]);
   for (const z of [-39, -13, 13, 39]) box(bucket, [16, 8, 12], TEETH, [-137, -75, z]);
+  // The earth it carries: a dome on the bucket's floor, scaled by how full it is (setLoad).
+  const bucketLoad = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2).scale(110, 88, 92), loadMaterial());
+  bucketLoad.position.set(-65, -76, 0);
+  bucketLoad.name = 'earth';
+  bucket.add(bucketLoad);
 
   // Operator on the seat, hands on the levers, looking at the bucket (-X).
   const shirt = 0x3567a8;
@@ -336,6 +341,7 @@ export function createDigSite({ shadowTexture = createShadowTexture(), style = '
     toModel(bucket, -137, -75),
   ];
   const teeth = () => toModel(bucket, -137, -75);
+  const bucketInside = () => toModel(bucket, -65, -40); // where what it carries drops from
 
   /**
    * Puts the excavator where a drive state says (src/excavatorDrive.js): { x, z, heading,
@@ -471,11 +477,19 @@ export function createDigSite({ shadowTexture = createShadowTexture(), style = '
   const marks = {
     tracks: new GroundMarks({ capacity: TRACK_CAPACITY, material: trackMaterial(), y: 0.3, size: [TRACK_STEP + 6, 34] }),
     spills: new GroundMarks({ capacity: SPILL_CAPACITY, material: spillMaterial(), y: 0.5, tinted: true }),
+    heaps: new Heaps({ geometry: moundGeometry(2, 1, 2, 9), material: heapMaterial() }),
   };
   for (const { mesh } of Object.values(marks)) {
     mesh.visible = look.marks;
     model.add(mesh);
   }
+  rocks.groundAt = (x, z) => marks.heaps.heightAt(x, z); // rocks rest on the heaps
+  /** How full the bucket is, 0..1: shows the earth in it (only in looks with marks). */
+  const setLoad = (fraction) => {
+    bucketLoad.scale.y = Math.max(0.001, fraction);
+    bucketLoad.visible = look.marks && fraction > 0.02;
+  };
+  setLoad(0);
 
   model.position.set(-cx, 0, -cz);
   const site = new THREE.Group();
@@ -493,8 +507,10 @@ export function createDigSite({ shadowTexture = createShadowTexture(), style = '
     animate,
     setDrive,
     setWorker,
+    setLoad,
     armPoints,
     teeth,
+    bucketInside,
     rocks,
     home: { x: HOME.x, z: HOME.z, heading: 0 },
     bodyRadius,

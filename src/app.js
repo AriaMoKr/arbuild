@@ -4,7 +4,7 @@ import { XrMenu } from './xrMenu.js';
 import { FrameTrace } from './frameTrace.js';
 import { DIG_CYCLE_S, DIG_KEYS, SITE_UNIT, createDigSite, digPose } from './digSite.js';
 import { STYLES } from './styles.js';
-import { noTread, treadMarks } from './groundMarks.js';
+import { heapRadius, noTread, treadMarks } from './groundMarks.js';
 import { GROUND_TOLERANCE, SoftOcclusion } from './occlusion.js';
 import { SiteSound } from './siteSound.js';
 import { PlacementMemory } from './placementMemory.js';
@@ -181,6 +181,10 @@ export function initApp() {
     digTime: 0, // seconds into the dig cycle: it only runs while A is held
     digging: false,
     lastPhase: digPose(0).phase, // the dig phase last frame: scoops and dumps happen as it changes
+    load: 0, // how full the bucket is with earth, 0..1 (src/groundMarks.js heaps)
+    loadBefore: 0, // what it held when the scoop started
+    scooped: 0, // what the scoop is taking, in loads
+    dumping: 0, // what the dump is letting out
     worker: standingAt(dig.workerHome), // where the worker is and what he's doing (src/worker.js)
     tread: noTread(), // how far each wheel row has rolled since its last track mark (src/groundMarks.js)
     restored: false, // the site was put back as it was saved in an earlier session
@@ -549,6 +553,9 @@ export function initApp() {
     dig.rocks.reset();
     dig.marks.tracks.reset();
     dig.marks.spills.reset();
+    dig.marks.heaps.reset();
+    run.load = run.loadBefore = run.scooped = run.dumping = 0;
+    dig.setLoad(0);
     run.tread = noTread();
     run.worker = standingAt(dig.workerHome);
     dig.setDrive(run.drive);
@@ -565,6 +572,8 @@ export function initApp() {
       worker: { x: run.worker.x, z: run.worker.z, facing: run.worker.facing },
       tracks: dig.marks.tracks.state(),
       spills: dig.marks.spills.state(),
+      heaps: dig.marks.heaps.state(),
+      load: round(run.load, 2),
     };
   }
 
@@ -577,9 +586,14 @@ export function initApp() {
       run.digTime = Math.max(0, e.digTime);
       run.lastPhase = digPose(run.digTime).phase; // no scoop or dump just for coming back
     }
+    dig.marks.heaps.restore(saved?.heaps); // before the rocks: they may rest on them
     dig.rocks.restore(saved?.rocks);
     dig.marks.tracks.restore(saved?.tracks);
     dig.marks.spills.restore(saved?.spills);
+    run.load = run.loadBefore = Number.isFinite(saved?.load) ? Math.min(1, Math.max(0, saved.load)) : 0;
+    run.scooped = 0;
+    run.dumping = run.lastPhase === 'dump' ? run.load : 0;
+    dig.setLoad(run.load);
     const w = saved?.worker;
     if (w && ['x', 'z', 'facing'].every((k) => Number.isFinite(w[k]))) run.worker = standingAt(w);
     dig.setDrive(run.drive);
@@ -592,29 +606,57 @@ export function initApp() {
     return [...dig.rocks.obstacles(), { x: run.worker.x, z: run.worker.z, r: dig.workerRadius }];
   }
 
-  // The dig cycle moves rocks: starting a scoop picks up the top rock near the teeth, and
-  // the bucket opening at the end of the dump lets it fall. Falling rocks land.
+  // The dig cycle moves rocks and earth. Starting a scoop picks up the top rock near the
+  // teeth, and fills the bucket: out of a heap there, if there is one, else out of the
+  // ground (a dug patch), as long as the teeth are over the table. The bucket empties over
+  // the dump, and as it opens at the end the earth becomes a heap under it (joining one
+  // that's there) and the rock falls, onto the heap or the table. Falling rocks land.
   function moveRocks(top, dt) {
     const phase = run.digPose.phase;
+    const area = driveArea(top);
+    const progress = (from, to) => {
+      const [start, end] = [DIG_KEYS[from].t, DIG_KEYS[to].t];
+      return Math.min(1, Math.max(0, ((run.digTime % DIG_CYCLE_S) - start) / (end - start)));
+    };
+    const smooth = (f) => f * f * (3 - 2 * f);
     if (phase !== run.lastPhase) {
       if (run.lastPhase === 'scoop') dig.rocks.carry(1); // the scoop's done: the rock rides in the bucket
       if (phase === 'scoop') {
         const teeth = dig.teeth();
         dig.rocks.scoop(teeth);
-        // A dug patch where the bucket bit, turned the way the bucket faces, if it's over the table.
-        const d = run.drive;
-        if (fits(teeth, 0, driveArea(top))) dig.marks.spills.add({ x: teeth.x, z: teeth.z, yaw: d.heading + d.swing, length: 110, width: 95, tone: 1 });
+        run.loadBefore = run.load;
+        run.scooped = 0;
+        if (fits(teeth, 0, area)) {
+          run.scooped = dig.marks.heaps.scoop(teeth.x, teeth.z, 1 - run.load);
+          if (run.scooped > 0) {
+            dig.rocks.settle(); // a rock that lay on the heap
+          } else {
+            run.scooped = 1 - run.load;
+            // A dug patch where the bucket bit, turned the way the bucket faces.
+            const d = run.drive;
+            dig.marks.spills.add({ x: teeth.x, z: teeth.z, yaw: d.heading + d.swing, length: 110, width: 95, tone: 1 });
+          }
+        }
       }
+      if (phase === 'dump') run.dumping = run.load;
       if (phase === 'return') {
-        const area = driveArea(top);
-        dig.rocks.dump({ contains: (x, z, r) => settle({ x, z }, r, area) }); // it lands on the table
+        if (run.dumping > 0.05) {
+          const under = dig.bucketInside();
+          const spot = settle(under, heapRadius(run.dumping), area); // on the table
+          dig.marks.heaps.add(spot.x, spot.z, run.dumping);
+        }
+        run.load = run.loadBefore = run.dumping = 0;
+        dig.rocks.dump({ contains: (x, z, r) => settle({ x, z }, r, area) }); // it lands on the table, or the heap
       }
       run.lastPhase = phase;
     }
     if (phase === 'scoop') {
-      const [start, end] = [DIG_KEYS[1].t, DIG_KEYS[2].t];
-      dig.rocks.carry(((run.digTime % DIG_CYCLE_S) - start) / (end - start));
+      const f = progress(1, 2);
+      dig.rocks.carry(f);
+      run.load = Math.min(1, run.loadBefore + run.scooped * smooth(f));
     }
+    if (phase === 'dump') run.load = run.dumping * (1 - smooth(progress(3, 4)));
+    dig.setLoad(run.load);
     for (const r of dig.rocks.update(dt)) {
       dig.marks.spills.add({ x: r.x, z: r.z, yaw: r.x * 0.07, length: r.w * 1.9, width: r.d * 1.9 }); // dirt where it lands
     }
@@ -633,7 +675,13 @@ export function initApp() {
     ];
     run.worker = stepWorker(
       run.worker,
-      { threats, watch: body, radius: dig.workerRadius, area: driveArea(top), obstacles: [...dig.rocks.obstacles(), { ...body, r: dig.bodyRadius }] },
+      {
+        threats,
+        watch: body,
+        radius: dig.workerRadius,
+        area: driveArea(top),
+        obstacles: [...dig.rocks.obstacles(), ...dig.marks.heaps.obstacles(), { ...body, r: dig.bodyRadius }],
+      },
       dt,
     );
     dig.setWorker(run.worker, limbSwing(run.worker));
@@ -656,11 +704,16 @@ export function initApp() {
       dt,
     );
     dig.setDrive(run.drive);
-    // The tyres leave tracks.
+    // The tyres leave tracks, and flatten any heap of earth the machine drives through.
     const tread = treadMarks(before, run.drive, run.tread, dig.wheels);
     run.tread = tread.carry;
     for (const mark of tread.marks) dig.marks.tracks.add(mark);
     const d = run.drive;
+    for (const heap of dig.marks.heaps.flatten(d.x, d.z, dig.bodyRadius * 0.75)) {
+      const r = heapRadius(heap.loads);
+      dig.marks.spills.add({ x: heap.x, z: heap.z, yaw: d.heading, length: r * 2.4, width: r * 2.2, tone: 0.5 });
+      dig.rocks.settle(); // a rock that lay on it
+    }
     if (d.x !== before.x || d.z !== before.z || d.heading !== before.heading || d.swing !== before.swing) tracker.confirm(); // keep this table
   }
 
@@ -736,6 +789,7 @@ export function initApp() {
       clearance: Math.min(...siteObstacles().map((o) => Math.hypot(d.x - o.x, d.z - o.z) - dig.bodyRadius - o.r)) * metres,
       digTime: run.digTime,
       digging: run.digging,
+      load: round(run.load, 2),
       steering,
     };
   }
@@ -940,7 +994,7 @@ export function initApp() {
         digPhase: run.digPose?.phase ?? null,
       },
       look: lookName,
-      marks: { tracks: dig.marks.tracks.count, spills: dig.marks.spills.count },
+      marks: { tracks: dig.marks.tracks.count, spills: dig.marks.spills.count, heaps: dig.marks.heaps.count, earth: round(dig.marks.heaps.loads, 2) },
       excavator: excavatorSnapshot(),
       rocks: rocksSnapshot(),
       worker: workerSnapshot(),

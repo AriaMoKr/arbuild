@@ -21,10 +21,11 @@ export function rockRadius(rock) {
 
 /**
  * The surface `rock` would rest on at (x, z): the top of the highest resting rock under
- * it, or the table (0). Its centre then goes at that + h/2 - SINK.
+ * it, else the ground there (`groundAt(x, z)`: heaps of earth), else the table (0). Its
+ * centre then goes at that + h/2 - SINK.
  */
-export function restBase(rock, x, z, rocks) {
-  let base = 0;
+export function restBase(rock, x, z, rocks, groundAt = null) {
+  let base = groundAt ? groundAt(x, z) : 0;
   for (const o of rocks) {
     if (o === rock || o.state !== 'resting') continue;
     if (Math.hypot(o.x - x, o.z - z) < (rockRadius(o) + rockRadius(rock)) * STACK_OVERLAP) base = Math.max(base, o.y + o.h / 2);
@@ -70,6 +71,7 @@ export class Rocks {
     this.bucket = bucket;
     this.inside = inside.clone();
     this.carried = null; // { rock, from, fromQuaternion }
+    this.groundAt = null; // (x, z) -> how high the earth is there, for rocks to rest on
     this.drops = 0; // counts dumps, to vary how dropped rocks land
     this.rocks = rocks.map((r) => {
       const shadow = new THREE.Mesh(shadowGeometry, shadowMaterial);
@@ -167,6 +169,11 @@ export class Rocks {
     return landed;
   }
 
+  /** The ground changed under the rocks (a heap scooped or flattened): rocks left in the air fall. */
+  settle() {
+    this._settle();
+  }
+
   /** Whether a rock is moving: in the bucket or falling. */
   get busy() {
     return this.rocks.some((r) => r.state !== 'resting');
@@ -220,7 +227,7 @@ export class Rocks {
   // ---------- internals ----------
 
   _drop(rock, to, endQuaternion) {
-    const restY = restBase(rock, to.x, to.z, this.rocks) + rock.h / 2 - SINK;
+    const restY = restBase(rock, to.x, to.z, this.rocks, this.groundAt) + rock.h / 2 - SINK;
     const startY = Math.max(restY, rock.mesh.position.y);
     rock.state = 'falling';
     rock.shadow.visible = false;
@@ -242,7 +249,7 @@ export class Rocks {
     const resting = this.rocks.filter((r) => r.state === 'resting').sort((a, b) => a.y - a.h / 2 - (b.y - b.h / 2));
     for (const r of resting) {
       // Rocks are built a little sunk into what's under them, so only a real gap counts.
-      if (r.y - r.h / 2 + SINK > restBase(r, r.x, r.z, this.rocks) + 1) this._drop(r, { x: r.x, z: r.z }, r.mesh.quaternion.clone());
+      if (r.y - r.h / 2 + SINK > restBase(r, r.x, r.z, this.rocks, this.groundAt) + 1) this._drop(r, { x: r.x, z: r.z }, r.mesh.quaternion.clone());
     }
   }
 

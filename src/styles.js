@@ -68,13 +68,15 @@ const LOOKS = {
     marks: true,
     decorate: ({ model, centre, radius, pile, clear }) => {
       const random = seeded(3);
-      const dirt = new THREE.MeshStandardMaterial({ color: 0x8a6a46, roughness: 1, flatShading: true });
+      // The dirt is mottled by vertex colours, so every geometry it's on gets them (shade()).
+      const dirt = new THREE.MeshStandardMaterial({ color: 0x8a6a46, roughness: 1, flatShading: true, vertexColors: true });
       const ground = new THREE.CircleGeometry(radius * 0.97, 28);
       const p = ground.attributes.position;
       for (let i = 1; i < p.count; i++) {
         const k = 0.9 + random() * 0.12; // a ragged rim
         p.setXY(i, p.getX(i) * k, p.getY(i) * k);
       }
+      shade(ground, 4, 0.2);
       const place = (mesh, x, z) => {
         mesh.position.set(x, -0.5, z);
         mesh.userData.ground = true; // lies on the table: not a part the e2e checks
@@ -82,15 +84,38 @@ const LOOKS = {
         return mesh;
       };
       place(new THREE.Mesh(ground.rotateX(-Math.PI / 2), dirt), centre.x, centre.z);
-      place(new THREE.Mesh(mound(260, 30, 220, 7), dirt), pile.x, pile.z);
+      place(new THREE.Mesh(moundGeometry(260, 30, 220, 7), dirt), pile.x, pile.z);
       // Clods here and there, clear of where the excavator, the worker and the rocks stand.
       for (let placed = 0, tries = 0; placed < 7 && tries < 60; tries++) {
         const a = random() * Math.PI * 2;
         const r = radius * (0.35 + random() * 0.5);
         const [x, z] = [centre.x + Math.cos(a) * r, centre.z + Math.sin(a) * r];
         if (clear.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + 15)) continue;
-        place(new THREE.Mesh(mound(20, 11, 17, 20 + placed), dirt), x, z).rotation.y = random() * 3;
+        place(new THREE.Mesh(moundGeometry(20, 11, 17, 20 + placed), dirt), x, z).rotation.y = random() * 3;
         placed++;
+      }
+      // Pebbles, and a plank someone left by the rim.
+      const stone = new THREE.MeshStandardMaterial({ color: 0x9a8f80, roughness: 1, flatShading: true });
+      for (let placed = 0, tries = 0; placed < 10 && tries < 80; tries++) {
+        const a = random() * Math.PI * 2;
+        const r = radius * (0.2 + random() * 0.7);
+        const [x, z] = [centre.x + Math.cos(a) * r, centre.z + Math.sin(a) * r];
+        if (clear.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + 10)) continue;
+        const size = 6 + random() * 6;
+        const pebble = new THREE.Mesh(jittered(new THREE.IcosahedronGeometry(0.5, 0), size * 1.3, size, size, 40 + placed), stone);
+        place(pebble, x, z).position.y += size * 0.45; // jittered keeps the bottom at -0.45 of its height
+        pebble.rotation.y = random() * 3;
+        placed++;
+      }
+      const wood = new THREE.MeshStandardMaterial({ color: 0xa88358, roughness: 0.9, flatShading: true });
+      for (let tries = 0; tries < 40; tries++) {
+        const a = random() * Math.PI * 2;
+        const r = radius * 0.72;
+        const [x, z] = [centre.x + Math.cos(a) * r, centre.z + Math.sin(a) * r];
+        if (clear.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + 70)) continue;
+        const plank = place(new THREE.Mesh(new THREE.BoxGeometry(120, 5, 28).translate(0, 2.5, 0), wood), x, z);
+        plank.rotation.y = a + Math.PI / 2 + (random() - 0.5) * 0.6; // lying along the rim, roughly
+        break;
       }
       const grass = new THREE.MeshStandardMaterial({ color: 0x6f8f3a, roughness: 1, flatShading: true });
       for (let i = 0; i < 22; i++) {
@@ -164,12 +189,22 @@ function seeded(seed) {
   };
 }
 
-/** A faceted heap w x h x d with a flat bottom at y = 0. */
-function mound(w, h, d, seed) {
+/** A faceted heap w x h x d with a flat bottom at y = 0, mottled (vertex colours). */
+export function moundGeometry(w, h, d, seed) {
   const geometry = jittered(new THREE.IcosahedronGeometry(0.5, 1), w, h * 2, d, seed);
   const p = geometry.attributes.position;
   for (let i = 0; i < p.count; i++) p.setY(i, Math.max(0, p.getY(i)));
   geometry.computeVertexNormals();
+  return shade(geometry, seed, 0.25);
+}
+
+/** Gives `geometry` vertex colours: white darkened by up to `amount`, at random (the same each time). */
+function shade(geometry, seed, amount) {
+  const random = seeded(seed + 23);
+  const p = geometry.attributes.position;
+  const colours = new Float32Array(p.count * 3);
+  for (let i = 0; i < p.count; i++) colours.fill(1 - random() * amount, i * 3, i * 3 + 3);
+  geometry.setAttribute('color', new THREE.BufferAttribute(colours, 3));
   return geometry;
 }
 

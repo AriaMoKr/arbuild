@@ -153,3 +153,22 @@ test('while it is drawn in, a scooped rock never dips into the table', () => {
     assert.ok(Math.min(...corners) >= -2 - 1e-9, `at ${f} its lowest corner is at ${Math.min(...corners)}`);
   }
 });
+
+test('a rock dumped onto raised ground (a heap) rests on it, and falls when the ground goes', () => {
+  const { rocks, bucket } = pile();
+  const small = rocks.rocks[1];
+  let height = 30;
+  rocks.groundAt = (x, z) => (Math.hypot(x - 600, z) < 60 ? height : 0);
+  rocks.scoop({ x: 200, z: 0 });
+  rocks.carry(1);
+  bucket.position.set(665, 200, 0); // its inside over the heap at x = 600
+  bucket.updateMatrixWorld(true);
+  rocks.dump(anywhere);
+  fallFor(rocks, 1);
+  assert.ok(Math.abs(small.y - (30 + small.h / 2 - 2)) < 1e-6, `rests on the heap: ${small.y}`);
+  height = 0; // the heap was scooped away
+  rocks.settle();
+  assert.equal(small.state, 'falling');
+  fallFor(rocks, 1);
+  assert.ok(Math.abs(small.y - (small.h / 2 - 2)) < 1e-6, `down on the table: ${small.y}`);
+});
