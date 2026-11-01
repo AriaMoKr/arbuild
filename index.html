@@ -4,12 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <title>Table Cube</title>
+    <meta name="description" content="A small dig site on your table, in passthrough AR on a Meta Quest 3: drive the excavator, dig, and heap up the earth." />
+    <meta name="theme-color" content="#0f1116" />
+    <title>Dig Site</title>
+    <!-- installable app: the manifest and icons are in public/, the service worker is written by scripts/sw-dist.mjs -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   </head>
   <body>
     <main class="card">
-      <h1>Table Cube</h1>
-      <p class="lede">Passthrough AR for Meta Quest 3: puts a little dig site on your table, with an excavator, its operator, a worker and a pile of rocks.</p>
+      <h1>Dig Site</h1>
+      <p class="lede">Passthrough AR for Meta Quest 3: a little dig site on your table, with an excavator to drive and dig with, its operator, a worker who keeps out of the way, and rocks and earth to move about.</p>
       <p id="version" class="version"></p>
 
       <button id="enter-ar" type="button" disabled>Checking…</button>
@@ -23,11 +29,10 @@
 
       <h2>In AR</h2>
       <ul>
-        <li>The dig site lands on the nearest table (preferring one in front of you), facing you. If it's out of view, the panel says which way to look.</li>
-        <li>Several tables? <b>Pull the trigger</b> or <b>pinch</b> to move it to the next one.</li>
-        <li>No table found? Pull the trigger or pinch to open Space Setup.</li>
-        <li>Push the <b>left thumbstick</b> to slide the dig site around the table, and the <b>right thumbstick</b> to spin it slowly. Hold <b>A</b> to repaint the excavator.</li>
-        <li>A small menu floats above your <b>left controller</b> (or left hand): point at it with the right one and pull the trigger to <b>Exit AR</b> or <b>Reload page</b>.</li>
+        <li>The dig site lands on the nearest table (preferring one in front of you), facing you. If it's out of view, the panel says which way to look. Each table keeps its own dig site, and it's all remembered for next time.</li>
+        <li>Several tables? <b>Pull the trigger</b> or <b>pinch</b> to move to the next one. No table found? Pull the trigger or pinch to open Space Setup.</li>
+        <li><b>Left thumbstick</b> drives the excavator, forwards and backwards along the way it faces; <b>right thumbstick</b> swings the cab. Hold <b>A</b> to dig: a scoop fills the bucket with earth and picks up a rock, and the dump drops them under the bucket. Hold <b>B</b> to repaint the excavator.</li>
+        <li>A small menu floats above your <b>left controller</b> (or left hand): point at it with the right one and pull the trigger for <b>Exit AR</b>, <b>Reload</b>, <b>Sound</b>, <b>Steering</b> (relative or absolute), <b>Reset</b> and <b>Look</b>.</li>
       </ul>
     </main>
     <script type="module" src="/src/main.js"></script>

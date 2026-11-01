@@ -50,6 +50,12 @@ const CDP_TIMEOUT_MS = 30000;
 
 async function launchBrowser() {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'table-site-e2e-'));
+  // On Windows, Chrome on a new profile checks whether the account's password is blank by logging
+  // on with an empty one: a failed logon, and enough of them lock the account. Answer it first.
+  if (process.platform === 'win32') {
+    const sinceEpoch = String((Date.now() + 11644473600000) * 1000); // microseconds since 1601-01-01 UTC
+    fs.writeFileSync(path.join(profile, 'Local State'), JSON.stringify({ password_manager: { os_password_blank: false, os_password_last_changed: sinceEpoch } }));
+  }
   const proc = spawn(
     findBrowser(),
     [

@@ -1,5 +1,11 @@
 import './style.css';
 
+// Built copies only: the service worker (scripts/sw-dist.mjs) makes the app installable and keeps
+// it working offline after the first visit. The dev server never registers it, so changes show up.
+if (import.meta.env.PROD && 'serviceWorker' in navigator && location.protocol !== 'file:') {
+  window.addEventListener('load', () => void navigator.serviceWorker.register('./sw.js').catch(() => {}));
+}
+
 // Dev builds only: send console output, errors and app state back to the dev server
 // (logs/quest-debug.jsonl), so problems on the headset are visible without USB debugging.
 // Started first so it also catches errors while the app starts.  ?debug=0  turns it off.

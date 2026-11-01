@@ -1,6 +1,8 @@
-# Table Cube
+# Dig Site
 
-A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres, styled as a tabletop diorama on its own patch of ground. It's about 42 × 20 cm, and shrinks to fit smaller tables. You drive the excavator round the table top, swing its cab and dig with it: it scoops rocks out of the pile and dumps them wherever you swing or drive it, while the worker keeps out of its way. Engine, hydraulic and rock sounds come from it (off until you turn them on from the menu). The app remembers your dig site, table and all, for next time. On Quest 3 your hands and real objects in front of it hide it, using the headset's depth sensing. It runs in Meta Quest Browser and is served from your PC over Wi-Fi. There is nothing to install on the headset.
+**https://ariamokr.github.io/arbuild/**
+
+A WebXR passthrough AR app for **Meta Quest 3**. It reads your room setup, finds a table, and puts a small dig site at the centre of the table top: a wheeled excavator with its operator, a worker in a hard hat and a pile of rocks, built from simple boxes, cylinders and spheres, styled as a tabletop diorama on its own patch of ground. It's about 42 × 20 cm, and shrinks to fit smaller tables. You drive the excavator round the table top, swing its cab and dig with it: it scoops rocks out of the pile and dumps them wherever you swing or drive it, while the worker keeps out of its way. Engine, hydraulic and rock sounds come from it (off until you turn them on from the menu). The app remembers your dig site, table and all, for next time. On Quest 3 your hands and real objects in front of it hide it, using the headset's depth sensing. It runs in Meta Quest Browser, from the address above, or served from your PC over Wi-Fi while developing. There is nothing to install on the headset, though it can be installed as an app (below, "Installing it").
 
 ## Requirements
 
@@ -97,14 +99,20 @@ npm run test:e2e  # headless Chrome + emulator: checks the dig site lands on the
 3. **Centre of the table.** The table top's polygon is in plane space. The app takes its area-weighted centroid and transforms it into the reference space. It never trusts the direction of the plane's normal: on Quest the table plane's +Y axis points *down*, so the dig site is lifted along the reference space's up axis. Only the plane's yaw is copied, so the site lines up with the table edges.
 4. **Which table.** The app picks the nearest table, counting tables outside your view 1.5 m further away, then stays locked on that `XRPlane` object, so the dig site doesn't jump when you walk around. Quest delivers the room's tables over the first frames, so that first pick is provisional: it's made again whenever a new table arrives, until you press the trigger, slide or spin. If the table briefly drops out of the scene data, the site stays where it is for up to a second, and a table that comes back in the same place is treated as the same one, so your slide, spin and choice of table are kept. Trigger or pinch cycles through the tables, ordered by distance from where you stood when the table was picked.
 5. **Occlusion.** The session also asks for `depth-sensing` (optional, `gpu-optimized`), so real things in front of the dig site, like your hands, hide it. The dig site's own shaders do it ([src/occlusion.js](src/occlusion.js)) instead of three.js's built-in pass, whose hard edges looked blocky round hands and flickered where the site touches the table. Each pixel averages 9 depth samples for soft edges, and a real surface only starts hiding the site once it's 2 cm in front of it (fully hidden at 5 cm), so the table's noisy depth never eats the rubble or the shadows.
-6. **Remembering the dig site.** The session also asks for `anchors` (optional). Once you've chosen a table (by driving, digging or picking it), the app makes a persistent spatial anchor where the site stands on it and saves what's on it in `localStorage` with the anchor's ID, one per table ([src/placementMemory.js](src/placementMemory.js)). Next session it restores the anchors, puts the site on the table under the last one used, turned as before, and puts everything back; any other remembered table gets its own site back when you switch to it.
+6. **Remembering the dig site.** The session also asks for `anchors` (optional). Once you've chosen a table (by driving, digging or picking it), the app makes a persistent spatial anchor where the site stands on it and saves what's on it in `localStorage` with the anchor's ID, one per table ([src/placementMemory.js](src/placementMemory.js)). Next session it restores the anchors, puts the site on the table under the last one used, turned as before, and puts everything back; any other remembered table gets its own site back when you switch to it. Each site is also saved relative to the others, so a table whose anchor the headset can't find from where you stand (one in another room) still gets its site back once any one anchor is found.
 7. **Messages.** Quest Browser has no DOM overlay in AR, so status text is drawn on a canvas panel that follows your head.
 
 The geometry and selection logic lives in [src/tableLocator.js](src/tableLocator.js) and has no three.js or browser dependency.
 
 ## Hosting without the PC
 
-`npm run build` writes a static site to `dist/` with relative paths. Upload it to any HTTPS static host (GitHub Pages, Netlify, Cloudflare Pages) and open that URL in Quest Browser.
+The app is published at **https://ariamokr.github.io/arbuild/** from `main` of [AriaMoKr/arbuild](https://github.com/AriaMoKr/arbuild): every push runs `.github/workflows/pages.yml`, which calls the sites' shared workflow ([AriaMoKr/common](https://github.com/AriaMoKr/common)'s `pages.yml`, on Node 24): `npm ci`, the unit tests, `npm run build`, and `dist/` is deployed to GitHub Pages. Once per repository, Settings › Pages › Build and deployment › Source must be set to **GitHub Actions**.
+
+`npm run build` writes a static site to `dist/` with relative paths (`vite build`, then `scripts/sw-dist.mjs` writes the service worker). Upload it to any HTTPS static host and open that URL in Quest Browser.
+
+## Installing it
+
+The built app is a web app (a manifest, icons and a service worker), so Quest Browser can install it: open the published address and choose **Install** from the browser's menu. It then opens from the headset's app library, full screen, and keeps working offline once it has loaded; a new version is picked up on the next start when online. `npm run icons` redraws the icons (`scripts/make-icons.py`, needs Pillow); the dev server never registers the service worker, so changes always show up there.
 
 ## Project layout
 
@@ -126,10 +134,14 @@ src/statusPanel.js      in-headset text panel
 src/xrMenu.js           in-AR menu above the left hand: Exit AR, Reload page, Sound, Steering, Reset, Look, "Updated …"
 src/frameTrace.js       times each frame of a session's first seconds, for the debug log
 src/version.js          fetches ./__version.json, when the app's files last changed
+public/                 the web manifest and icons, copied into dist/ as they are
 src/emulation.js        dev-only Quest 3 emulator setup (IWER + synthetic rooms)
 src/debugChannel.js     dev-only: sends console output, errors and state to the dev server
 test/                   unit tests (node --test)
 scripts/e2e.mjs         headless end-to-end test
+scripts/sw-dist.mjs     writes dist/sw.js after the build (installable, works offline)
+scripts/make-icons.py   draws public/icons/
+.github/workflows/      the Pages deployment
 scripts/vite-plugins.mjs  dev server extras: the plain-HTTP port, the debug log endpoint and ./__version.json
 vite.config.js          HTTPS dev server on the LAN, build settings
 ```

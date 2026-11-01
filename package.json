@@ -1,14 +1,25 @@
 {
-  "name": "quest-table-cube",
+  "name": "arbuild",
   "version": "0.1.0",
   "private": true,
-  "description": "WebXR AR app for Meta Quest 3 that places a cube at the center of a detected table.",
+  "description": "A small dig site on your table, in passthrough AR on a Meta Quest 3: drive the excavator, dig, and heap up the earth. WebXR, three.js and Vite.",
+  "keywords": ["webxr", "augmented-reality", "threejs", "meta-quest", "pwa"],
+  "homepage": "https://ariamokr.github.io/arbuild/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AriaMoKr/arbuild.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AriaMoKr/arbuild/issues"
+  },
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "predev": "node scripts/check-node.mjs",
     "dev": "vite",
     "prebuild": "node scripts/check-node.mjs",
-    "build": "vite build",
+    "build": "vite build && node scripts/sw-dist.mjs",
+    "icons": "python scripts/make-icons.py",
     "prepreview": "node scripts/check-node.mjs",
     "preview": "vite preview",
     "test": "node --test",
