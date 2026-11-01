@@ -5,10 +5,13 @@ import {
   PLACEMENT_KEY,
   PlacementMemory,
   RESTORE_TIMEOUT_MS,
+  composePose,
+  frameFrom,
   nearestSite,
   parseRecord,
   poseOf,
   recordText,
+  relativePose,
   siteMoved,
 } from '../src/placementMemory.js';
 
@@ -37,6 +40,7 @@ class Storage {
 class Browser {
   constructor() {
     this.persistent = new Map(); // uuid -> transform
+    this.lost = new Set(); // anchors the headset can't find (too far away): restored, but never located
     this.next = 1;
   }
   session({ anchors = true } = {}) {
@@ -57,10 +61,12 @@ class Browser {
   }
   anchor(transform, uuid = null) {
     const browser = this;
+    const anchorSpace = { transform, uuid };
     return {
-      anchorSpace: { transform },
+      anchorSpace,
       requestPersistentHandle() {
         uuid ??= `uuid-${browser.next++}`;
+        anchorSpace.uuid = uuid;
         browser.persistent.set(uuid, transform);
         return Promise.resolve(uuid);
       },
@@ -69,7 +75,7 @@ class Browser {
   frame() {
     return {
       createAnchor: (transform) => Promise.resolve(this.anchor(transform)),
-      getPose: (space) => ({ transform: space.transform }),
+      getPose: (space) => (this.lost.has(space.uuid) ? null : { transform: space.transform }),
     };
   }
 }
@@ -86,9 +92,9 @@ beforeEach(() => {
 
 test('parseRecord reads its records (version 1 as a single site) and refuses anything else', () => {
   const v2 = recordText('a', [{ anchor: 'a', savedAt: null, usedAt: 5, state: { n: 1 } }]);
-  assert.deepEqual(parseRecord(v2), { current: 'a', sites: [{ anchor: 'a', savedAt: null, usedAt: 5, state: { n: 1 } }] });
+  assert.deepEqual(parseRecord(v2), { current: 'a', sites: [{ anchor: 'a', savedAt: null, usedAt: 5, state: { n: 1 }, rel: null }] });
   const v1 = JSON.stringify({ v: 1, anchor: 'old', savedAt: '2026-10-05T00:00:00Z', state: { n: 2 } });
-  assert.deepEqual(parseRecord(v1), { current: 'old', sites: [{ anchor: 'old', savedAt: '2026-10-05T00:00:00Z', usedAt: 0, state: { n: 2 } }] });
+  assert.deepEqual(parseRecord(v1), { current: 'old', sites: [{ anchor: 'old', savedAt: '2026-10-05T00:00:00Z', usedAt: 0, state: { n: 2 }, rel: null }] });
   for (const bad of [null, '', 'nonsense', '{}', JSON.stringify({ v: 3, sites: [] }), JSON.stringify({ v: 1, anchor: '', state: {} })]) {
     assert.equal(parseRecord(bad), null, String(bad));
   }
@@ -277,4 +283,122 @@ test('a site whose anchor turns up only after its table was chosen is carried on
   await settle();
   assert.equal(next.sites.length, 1);
   assert.equal(browser.persistent.size, 1);
+});
+
+// ---------- sites placed relative to each other, for anchors that can't be found ----------
+
+const TABLE_C = { x: -3, y: 0.7, z: 4, yaw: -2 };
+
+/** A first session that works on tables A, B and C in turn, ending on `endOn`. */
+async function threeTables(browser, storage, endOn = TABLE_C) {
+  const memory = new PlacementMemory(storage);
+  memory.start(browser.session(), 0);
+  const visit = async (pose, state, now) => {
+    memory.select(memory.siteFor(pose));
+    memory.keep(browser.frame(), null, pose, () => state, now);
+    await settle();
+  };
+  await visit(TABLE_A, { on: 'A' }, 0);
+  await visit(TABLE_B, { on: 'B' }, 2000);
+  await visit(TABLE_C, { on: 'C' }, 4000);
+  if (endOn !== TABLE_C) await visit(endOn, { on: 'again' }, 6000);
+  memory.end();
+  return memory;
+}
+
+test('relativePose, composePose and frameFrom undo each other', () => {
+  const frame = { x: 1, y: 0.5, z: -2, yaw: 0.7 };
+  const rel = relativePose(TABLE_B, frame);
+  const back = composePose(frame, rel);
+  for (const k of ['x', 'y', 'z']) assert.ok(Math.abs(back[k] - TABLE_B[k]) < 1e-9, k);
+  assert.ok(Math.abs(Math.atan2(Math.sin(back.yaw - TABLE_B.yaw), Math.cos(back.yaw - TABLE_B.yaw))) < 1e-9);
+  const again = frameFrom(TABLE_B, rel);
+  for (const k of ['x', 'y', 'z', 'yaw']) assert.ok(Math.abs(again[k] - frame[k]) < 1e-9, k);
+});
+
+test('the record keeps each site relative to the first; old records without that still read', async () => {
+  const browser = new Browser();
+  const storage = new Storage();
+  await threeTables(browser, storage);
+  const record = saved(storage);
+  assert.equal(record.sites.length, 3);
+  assert.deepEqual(record.sites[0].rel, { x: 0, y: 0, z: 0, yaw: 0 });
+  const expected = relativePose(TABLE_C, TABLE_A);
+  for (const k of ['x', 'y', 'z', 'yaw']) assert.ok(Math.abs(record.sites[2].rel[k] - expected[k]) < 1e-3, `C relative to A: ${k}`);
+  assert.equal(parseRecord(recordText('a', [{ anchor: 'a', savedAt: null, usedAt: 0, state: {} }])).sites[0].rel, null);
+  assert.equal(parseRecord(recordText('a', [{ anchor: 'a', savedAt: null, usedAt: 0, state: {}, rel: { x: 1 } }])).sites[0].rel, null, 'a broken rel is dropped');
+});
+
+test('a table whose anchor cannot be found still gets its site back, placed from another anchor', async () => {
+  const browser = new Browser();
+  const storage = new Storage();
+  await threeTables(browser, storage);
+  browser.lost.add('uuid-2'); // B's anchor is out of reach
+  const memory = new PlacementMemory(storage);
+  memory.start(browser.session(), 0);
+  await settle();
+  const found = memory.locate(browser.frame(), null, 16);
+  assert.equal(found.pending, false);
+  assert.ok(Math.abs(found.pose.x - TABLE_C.x) < 1e-9, 'home (C) by its own anchor');
+  const b = memory.siteFor(TABLE_B);
+  assert.ok(b, 'B is placed');
+  assert.equal(b.poseKind, 'derived');
+  assert.deepEqual(b.state, { on: 'B' });
+  for (const k of ['x', 'y', 'z']) assert.ok(Math.abs(b.pose[k] - TABLE_B[k]) < 1e-3, `B's derived pose: ${k}`);
+  // Working on it there makes it a fresh anchor, replacing the lost one, and keeps its state.
+  memory.select(b);
+  memory.keep(browser.frame(), null, TABLE_B, () => ({ on: 'B', more: true }), 100);
+  await settle();
+  assert.equal(browser.persistent.has('uuid-2'), false, 'the lost anchor was let go');
+  assert.equal(memory.sites.length, 3, 'no second site for B');
+  assert.deepEqual(saved(storage).sites.find((s) => s.state.on === 'B').state, { on: 'B', more: true });
+});
+
+test('the last table used is found through another table\'s anchor when its own is lost', async () => {
+  const browser = new Browser();
+  const storage = new Storage();
+  await threeTables(browser, storage);
+  browser.lost.add('uuid-3'); // C's (home's) anchor is out of reach, and so is the reference's
+  browser.lost.add('uuid-1');
+  const memory = new PlacementMemory(storage);
+  memory.start(browser.session(), 0);
+  await settle();
+  const found = memory.locate(browser.frame(), null, 16);
+  assert.equal(found.pending, false);
+  for (const k of ['x', 'y', 'z']) assert.ok(Math.abs(found.pose[k] - TABLE_C[k]) < 1e-3, `home derived from B: ${k}`);
+  assert.ok(Math.abs(Math.atan2(Math.sin(found.pose.yaw - TABLE_C.yaw), Math.cos(found.pose.yaw - TABLE_C.yaw))) < 1e-3);
+  assert.deepEqual(memory.siteFor(TABLE_A).state, { on: 'A' }, 'the reference itself, derived');
+});
+
+test('when no anchor at all can be found, the sites wait, then start afresh', async () => {
+  const browser = new Browser();
+  const storage = new Storage();
+  await threeTables(browser, storage);
+  for (const uuid of ['uuid-1', 'uuid-2', 'uuid-3']) browser.lost.add(uuid);
+  const memory = new PlacementMemory(storage);
+  memory.start(browser.session(), 0);
+  await settle();
+  assert.equal(memory.locate(browser.frame(), null, 16).pending, true);
+  assert.deepEqual(memory.locate(browser.frame(), null, RESTORE_TIMEOUT_MS + 1), { pose: null, pending: false });
+  assert.equal(memory.siteFor(TABLE_B), null);
+});
+
+test('the relative positions survive the first site being forgotten or lost', async () => {
+  const browser = new Browser();
+  const storage = new Storage();
+  await threeTables(browser, storage);
+  // The first site's anchor is gone from the headset entirely: the next one becomes the reference.
+  browser.persistent.delete('uuid-1');
+  browser.lost.add('uuid-3');
+  const memory = new PlacementMemory(storage);
+  memory.start(browser.session(), 0);
+  await settle();
+  memory.locate(browser.frame(), null, 16);
+  assert.equal(memory.sites.length, 2);
+  const c = memory.siteFor(TABLE_C);
+  assert.ok(c && c.poseKind === 'derived', 'C placed from B after rebasing');
+  for (const k of ['x', 'y', 'z']) assert.ok(Math.abs(c.pose[k] - TABLE_C[k]) < 1e-3, k);
+  memory.end();
+  const record = saved(storage);
+  assert.deepEqual(record.sites[0].rel, { x: 0, y: 0, z: 0, yaw: 0 }, 'the new reference saves as the origin');
 });
