@@ -7,6 +7,9 @@ import { STYLES } from './styles.js';
 import { heapRadius, noTread, treadMarks } from './groundMarks.js';
 import { GROUND_TOLERANCE, SoftOcclusion } from './occlusion.js';
 import { SiteSound } from './siteSound.js';
+import { Multiplayer, isRoomCode, roomInAddress } from './multiplayer.js';
+import { inviteHint, noticeText, statusText } from './presence.js';
+import { easeTowards, marksToApply, mergeInputs, packInput, quarterTurnsFor, sharedSpin, siteSpinFrom } from './sharedFrame.js';
 import { PlacementMemory } from './placementMemory.js';
 import { LOOKAHEADS_S, limbSwing, nearestThreat, predictPoints, standingAt, stepWorker } from './worker.js';
 import { nextHue, readLeftStick, readRightController, viewerHeading } from './controllerInput.js';
@@ -78,6 +81,10 @@ export function initApp() {
   const ui = {
     button: document.getElementById('enter-ar'),
     status: document.getElementById('status'),
+    share: document.getElementById('share'),
+    joinForm: document.getElementById('join-form'),
+    roomCode: document.getElementById('room-code'),
+    invite: document.getElementById('invite'),
   };
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -138,6 +145,52 @@ export function initApp() {
   // Engine, hydraulics and rocks, from the excavator (src/siteSound.js).
   const sound = new SiteSound({ emitter: dig.excavator, camera });
 
+  // Shared sessions with other headsets (src/multiplayer.js): the others' heads and hands are
+  // drawn in the dig site's frame, and the XR controllers give this visitor's hands.
+  const controllers = [0, 1].map((i) => {
+    const controller = renderer.xr.getController(i);
+    scene.add(controller);
+    const hand = { controller, source: null };
+    controller.addEventListener('connected', (e) => {
+      hand.source = e.data;
+    });
+    controller.addEventListener('disconnected', () => {
+      hand.source = null;
+    });
+    return hand;
+  });
+  const multiplayer = new Multiplayer({
+    scene,
+    camera,
+    renderer,
+    hands: () => controllers,
+    floor: () => (activeReferenceSpaceType === 'local-floor' ? 0 : null), // local-floor's y = 0 is the floor
+  });
+  multiplayer.on('notice', (n) => {
+    const text = noticeText(n);
+    if (!text) return;
+    run.notice = { text, until: performance.now() + 4000 };
+    console.info(`[share] ${text}`);
+  });
+  multiplayer.on('change', () => {
+    showShareLabel();
+    showInvite();
+  });
+  /** Starts a room (a new one, or `room` by its code) and says so; the address and the panel show the code. */
+  const joinRoom = (room) => {
+    multiplayer.start(room);
+    console.info(`[share] ${room ? 'joined' : 'started'} room ${multiplayer.room}`);
+    showShareLabel();
+    showInvite();
+  };
+  const leaveRoom = () => {
+    const done = multiplayer.stop();
+    console.info('[share] left the room');
+    showShareLabel();
+    showInvite();
+    return done;
+  };
+
   const menu = new XrMenu({
     onExit: () => endAR(),
     onReload: () => location.reload(),
@@ -154,16 +207,26 @@ export function initApp() {
     onLook: () => setLook(lookNames[(lookNames.indexOf(lookName) + 1) % lookNames.length]),
     // Back to how the dig site started, on the same table (the remembered one is replaced).
     onReset: () => {
+      if (multiplayer.following) return; // the host's site: only the host resets it
       resetSite();
       console.info('[memory] the dig site was reset');
+    },
+    // A shared session: start one (the room goes into the address, the code onto the panel), or leave it.
+    onShare: () => (multiplayer.active ? leaveRoom() : joinRoom()),
+    // Agree on the frame with the other headset: both touch the same corner of the table.
+    onAlign: () => {
+      run.aligning = true;
+      console.info('[share] aligning: waiting for the corner');
     },
   });
   const showSoundLabel = () => menu.setLabel('sound', sound.muted ? 'Sound off' : 'Sound on');
   const showSteeringLabel = () => menu.setLabel('steering', `Steering: ${steering}`);
   const showLookLabel = () => menu.setLabel('look', `Look: ${lookName}`);
+  const showShareLabel = () => menu.setLabel('share', multiplayer.active ? 'Leave room' : 'Share');
   showSoundLabel();
   showSteeringLabel();
   showLookLabel();
+  showShareLabel();
   scene.add(menu.root);
 
   const tracker = new TableTracker();
@@ -193,6 +256,13 @@ export function initApp() {
     state: 'idle',
     sceneObjectCount: 0,
     depthSince: null, // frame time of the first depth frame (occlusion), for the debug log
+    aligning: false, // the Align button was pressed: the next trigger pull marks the table corner
+    turns: 0, // this headset's quarter turns onto the shared frame (src/sharedFrame.js)
+    resets: 0, // how often the site started afresh: a guest follows the host's count
+    sent: { t: 0, s: 0 }, // the marks sent so far, by their sequence (the host)
+    live: null, // the host's latest site, which a guest eases towards
+    notice: null, // { text, until }: a session notice on the panel
+    marksApplied: null, // a guest: the host's marks put here so far ({ epoch, t, s }); null puts them all back
   };
   // Frame timing over the last second, for the debug channel's snapshots.
   const frameStats = { since: null, last: null, count: 0, worstMs: 0, fps: null, worstFrameMs: null };
@@ -243,6 +313,7 @@ export function initApp() {
       return;
     }
     xrSession.addEventListener('select', onSelect);
+    xrSession.addEventListener('squeezestart', () => multiplayer.wave()); // a grip: wave to the others
     // 'visible', 'visible-blurred' (a system menu is up) or 'hidden' (e.g. the headset is off).
     xrSession.addEventListener('visibilitychange', () => {
       console.info(`[session] visibility: ${xrSession.visibilityState}`);
@@ -280,6 +351,10 @@ export function initApp() {
       state: 'scanning',
       sceneObjectCount: 0,
       depthSince: null,
+      aligning: false,
+      sent: { t: 0, s: 0 },
+      live: null,
+      notice: null,
     });
     resetSite();
     Object.assign(frameStats, { since: null, last: null, count: 0, worstMs: 0, fps: null, worstFrameMs: null });
@@ -299,6 +374,7 @@ export function initApp() {
     anchor.visible = false;
     panel.show(null);
     menu.hide();
+    multiplayer.clearFrame();
     sound.stop();
     setButton('Enter AR', false);
     if (startError) {
@@ -318,6 +394,10 @@ export function initApp() {
       const button = menu.buttonFor(event.frame, event.inputSource, renderer.xr.getReferenceSpace());
       if (button) {
         menu.press(button);
+        return;
+      }
+      if (run.aligning) {
+        alignToCorner(event.frame, event.inputSource);
         return;
       }
     }
@@ -400,7 +480,7 @@ export function initApp() {
       console.info(`[tables] table back after ${Math.round(recovery.missingMs)} ms${how}; the site stayed put`);
     }
     const right = readRightController(xrSession.inputSources);
-    repaint(right, dt);
+    const own = packInput({ left: readLeftStick(xrSession.inputSources), right: right?.stick, a: right?.aPressed, b: right?.bPressed });
 
     if (table) {
       if (tracker.lockId !== run.lockId) {
@@ -429,26 +509,43 @@ export function initApp() {
         }
         logTablePick(table, candidates);
       }
-      driveExcavator(readLeftStick(xrSession.inputSources), right, table.top, dt);
-      run.digging = Boolean(right?.aPressed);
-      if (run.digging) run.digTime += dt; // holding A digs; letting go stops the arm where it is
-      placeSite(table.top);
-      run.digPose = dig.animate(time / 1000, run.digTime);
-      moveRocks(table.top, dt);
-      moveWorker(table.top, dt);
-      if (run.digging) tracker.confirm(); // the user is working with this table: keep it
-      if (!tracker.provisional) {
-        const at = anchorPosition(table.top);
-        memory.keep(frame, refSpace, { ...at, yaw: table.top.yaw + dig.site.rotation.y }, siteState, time);
+      if (multiplayer.following) {
+        // A guest: the host runs the site; this headset shows it and sends its input (below).
+        followHost(table.top, time, dt);
+      } else {
+        // Alone, or the host: everyone's input drives the one excavator. The marks made here
+        // are this site's own, so following a host again puts all of the host's back.
+        run.marksApplied = null;
+        const input = multiplayer.active ? mergeInputs(own, multiplayer.guestInputs(), time) : own;
+        const rightIn = { stick: { x: input.rs[0], y: input.rs[1] }, aPressed: input.a, bPressed: input.b };
+        repaint(rightIn, dt);
+        driveExcavator({ x: input.ls[0], y: input.ls[1] }, rightIn, table.top, dt);
+        run.digging = input.a;
+        if (run.digging) run.digTime += dt; // holding A digs; letting go stops the arm where it is
+        placeSite(table.top);
+        run.digPose = dig.animate(time / 1000, run.digTime);
+        moveRocks(table.top, dt);
+        moveWorker(table.top, dt);
+        if (run.digging) tracker.confirm(); // the user is working with this table: keep it
+        if (!tracker.provisional) {
+          const at = anchorPosition(table.top);
+          memory.keep(frame, refSpace, { ...at, yaw: table.top.yaw + dig.site.rotation.y }, siteState, time);
+        }
+        multiplayer.sendState(time, liveState);
       }
+      // The shared frame is the dig site's: the others' heads and hands are drawn in it.
+      multiplayer.setFrame({ ...anchorPosition(table.top), yaw: table.top.yaw + dig.site.rotation.y });
       if (run.seenAt === null && run.viewer && viewAngleTo(siteCentre(table.top), run.viewer) <= SEEN_ANGLE) {
         run.seenAt = time;
       }
     } else {
+      repaint(right, dt);
       anchor.visible = false;
       run.digPose = null;
       run.lockId = null;
+      multiplayer.clearFrame();
     }
+    multiplayer.update(time, multiplayer.active && !multiplayer.isHost ? own : null);
 
     run.state = describeState({
       table,
@@ -546,6 +643,9 @@ export function initApp() {
   // The dig site as it was built: the excavator parked with its arm at rest, the rocks in
   // their pile and the worker where he stood.
   function resetSite() {
+    run.resets++; // guests start afresh with the host; and the next site message carries every mark
+    run.sent = { t: 0, s: 0 };
+    run.marksApplied = null; // a guest puts all the host's marks back (followHost)
     run.restored = false; // whatever was put back is gone now
     run.drive = parkedAt(dig.home);
     run.digTime = 0;
@@ -685,6 +785,102 @@ export function initApp() {
       dt,
     );
     dig.setWorker(run.worker, limbSwing(run.worker));
+  }
+
+  // The site as the host sends it (src/sharedFrame.js isSiteMessage): the excavator, the
+  // worker, the rocks, the heaps, the marks added since the last message (all of them for a
+  // newcomer or after a reset), the paint, the reset count and the spin in the shared frame.
+  function liveState(n, full) {
+    const d = run.drive;
+    const w = run.worker;
+    const r3 = (v) => Math.round(v * 1000) / 1000;
+    const marks = {
+      t: full ? dig.marks.tracks.state() : dig.marks.tracks.since(run.sent.t),
+      s: full ? dig.marks.spills.state() : dig.marks.spills.since(run.sent.s),
+    };
+    run.sent = { t: dig.marks.tracks.sequence, s: dig.marks.spills.sequence };
+    return {
+      n,
+      full: Boolean(full), // m has every mark (a guest replaces its marks with them)
+      e: { x: r3(d.x), z: r3(d.z), heading: r3(d.heading), swing: r3(d.swing), travel: r3(d.travel), digTime: r3(run.digTime), load: r3(run.load) },
+      w: { x: r3(w.x), z: r3(w.z), facing: r3(w.facing), stride: r3(w.stride), walk: r3(w.walk), headYaw: r3(w.headYaw) },
+      r: dig.rocks.state(),
+      h: dig.marks.heaps.state(),
+      m: marks,
+      hue: paintHue,
+      reset: run.resets,
+      spin: sharedSpin(dig.site.rotation.y, run.turns),
+    };
+  }
+
+  // A guest: takes the host's latest site and eases the excavator towards it, so the 15
+  // messages a second don't show as steps; the rocks and heaps are put as sent, and the
+  // tracks and dirt as the session kept them from every message: the new ones, or all of
+  // them when this site was reset or replaced (entering AR, a look switch, its own reset).
+  function followHost(top, time, dt) {
+    const msg = multiplayer.takeState();
+    if (msg) {
+      // The first state, or the host's site started afresh (or this one did): jump, don't ease.
+      const jump = !run.live || msg.reset !== run.resets;
+      if (msg.reset !== run.resets) {
+        resetSite();
+        run.resets = msg.reset;
+      }
+      run.live = msg;
+      dig.site.rotation.y = siteSpinFrom(msg.spin, run.turns);
+      dig.rocks.restore(msg.r);
+      dig.marks.heaps.restore(msg.h);
+      run.worker = { ...run.worker, x: msg.w.x, z: msg.w.z, facing: msg.w.facing, stride: msg.w.stride, walk: msg.w.walk, headYaw: msg.w.headYaw, target: null };
+      if (Number.isFinite(msg.hue) && msg.hue !== paintHue) {
+        paintHue = msg.hue;
+        applyPaint();
+      }
+      if (jump) {
+        run.drive = easeTowards(run.drive, msg.e, Infinity);
+        run.digTime = msg.e.digTime;
+      }
+    }
+    const kept = multiplayer.hostMarks;
+    if (kept) {
+      const todo = marksToApply(run.marksApplied, kept);
+      if (todo.restore) {
+        dig.marks.tracks.restore(todo.t);
+        dig.marks.spills.restore(todo.s);
+      } else {
+        dig.marks.tracks.addMany(todo.t);
+        dig.marks.spills.addMany(todo.s);
+      }
+      run.marksApplied = { epoch: kept.epoch, t: kept.total.t, s: kept.total.s };
+    }
+    if (run.live) {
+      const e = run.live.e;
+      run.drive = easeTowards(run.drive, e, dt);
+      run.digTime += (e.digTime - run.digTime) * (1 - Math.exp(-20 * dt));
+      run.load = e.load;
+      dig.setLoad(run.load);
+      dig.setDrive(run.drive);
+      dig.setWorker(run.worker, limbSwing(run.worker));
+    }
+    run.digging = false;
+    placeSite(top);
+    run.digPose = dig.animate(time / 1000, run.digTime);
+    dig.rocks.update(dt); // a rock still falling when it was sent lands here too
+  }
+
+  // The Align button, then a trigger pull with the controller on a corner of the table: the
+  // quarter turns that put that corner in the shared frame's +x +z quadrant (src/sharedFrame.js).
+  function alignToCorner(frame, inputSource) {
+    const top = lockedTop();
+    const space = inputSource.gripSpace ?? inputSource.targetRaySpace;
+    const pose = top && space ? frame.getPose(space, renderer.xr.getReferenceSpace()) : null;
+    run.aligning = false;
+    if (!pose) {
+      console.warn('[share] align: no controller pose, or no table');
+      return;
+    }
+    const p = pose.transform.position;
+    run.turns = quarterTurnsFor(intoFrame({ x: p.x - top.center.x, z: p.z - top.center.z }, top.yaw));
+    console.info(`[share] aligned: ${run.turns} quarter turn(s)`);
   }
 
   // The left stick drives the excavator round the table, the right stick swings its cab
@@ -858,8 +1054,11 @@ export function initApp() {
       case 'no-table':
         return { title: 'No table in your room setup', lines: ['Add a table (and label it Table) in Space Setup.', captureHint] };
       case 'placed': {
+        if (run.aligning) {
+          return { title: 'Align with your friend', lines: ['Both touch the same corner of the table', 'with the right controller, then pull its trigger.'] };
+        }
         // Stay up until the user has actually seen the site, then a few more seconds.
-        if (run.seenAt !== null && time - run.seenAt > PLACED_HINT_MS) return null;
+        if (run.seenAt !== null && time - run.seenAt > PLACED_HINT_MS) return roomPanel(time);
         const count = run.candidates.length;
         const lines = [];
         if (run.seenAt === null) lines.push(directionHint(siteCentre(table.top)));
@@ -879,6 +1078,17 @@ export function initApp() {
       default:
         return null;
     }
+  }
+
+  // In a shared room, once the placement hint is done: the room's code, how it's going, a notice.
+  function roomPanel(time) {
+    if (!multiplayer.active) return null;
+    const company = multiplayer.company();
+    const lines = [statusText(company, multiplayer.condition())];
+    if (run.notice && time < run.notice.until) lines.push(run.notice.text);
+    if (company.here + company.nearby === 0) lines.push(inviteHint(multiplayer.room));
+    else if (multiplayer.following) lines.push("Your friend's site: whoever pushes, drives.");
+    return { title: `Room ${multiplayer.room}`, lines };
   }
 
   function directionHint(point) {
@@ -903,6 +1113,29 @@ export function initApp() {
 
   ui.button.addEventListener('click', () => (renderer.xr.isPresenting ? endAR() : startAR()));
 
+  // The page's share controls: start a room, join one by its code, show the invite.
+  const showInvite = () => {
+    const link = multiplayer.inviteLink;
+    ui.invite.hidden = !link;
+    if (link) ui.invite.textContent = `Room ${multiplayer.room} · ${link}`;
+    ui.share.textContent = multiplayer.active ? 'Leave the room' : 'Share this dig site';
+  };
+  ui.share.addEventListener('click', () => (multiplayer.active ? leaveRoom() : joinRoom()));
+  ui.joinForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const code = ui.roomCode.value.trim().toLowerCase();
+    if (!isRoomCode(code)) {
+      setStatus("That isn't a room code: they look like k3vd-q8hn.", 'error');
+      return;
+    }
+    joinRoom(code);
+  });
+  const roomAtLoad = roomInAddress();
+  if (roomAtLoad) joinRoom(roomAtLoad); // opened from an invite: join at once
+  window.addEventListener('pagehide', () => multiplayer.pause());
+  window.addEventListener('pageshow', (e) => e.persisted && multiplayer.resume());
+  showInvite();
+
   // Enter AR stays disabled until the shaders are compiled too, so the session can't
   // start half-way through and stall on its first frames.
   Promise.all([checkSupport(), precompile()]).then(([{ ok, message }]) => {
@@ -917,6 +1150,7 @@ export function initApp() {
   // mapping, so these programs are reused as they are.
   async function precompile() {
     const start = performance.now();
+    multiplayer.warmUp(); // a stand-in avatar, so its shaders compile now
     try {
       // compileAsync needs KHR_parallel_shader_compile, which Quest Browser lacks (three warns
       // about it every time); there, compile in one go instead.
@@ -928,6 +1162,7 @@ export function initApp() {
       });
       for (const texture of textures) renderer.initTexture(texture);
       const meshes = warmUpDraw();
+      multiplayer.coolDown();
       console.info(
         `[shaders] precompiled ${renderer.info.programs.length} shader programs, ${textures.size} textures and ${meshes} meshes in ${Math.round(performance.now() - start)} ms`,
       );
@@ -970,6 +1205,12 @@ export function initApp() {
     startAR,
     endAR,
     selectNext: () => onSelect(),
+    /** A shared session, for tests: start one (in `room`, or a new one), leave it, set the frame's turns. */
+    startShare: (room) => joinRoom(room),
+    stopShare: () => leaveRoom(),
+    setTurns: (turns) => {
+      run.turns = turns;
+    },
     /** Turns depth occlusion off and back on, for comparing views in tests. */
     setOcclusion: (on) => {
       occlusion.enabled = Boolean(on);
@@ -994,6 +1235,8 @@ export function initApp() {
         digPhase: run.digPose?.phase ?? null,
       },
       look: lookName,
+      share: multiplayer.snapshot(),
+      turns: run.turns,
       marks: { tracks: dig.marks.tracks.count, spills: dig.marks.spills.count, heaps: dig.marks.heaps.count, earth: round(dig.marks.heaps.loads, 2) },
       excavator: excavatorSnapshot(),
       rocks: rocksSnapshot(),

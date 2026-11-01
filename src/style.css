@@ -117,3 +117,39 @@ li + li {
 .version:empty {
   display: none;
 }
+
+/* The share controls */
+.share {
+  display: grid;
+  gap: 12px;
+}
+
+.join {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+
+.join label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.join input {
+  font: inherit;
+  width: 12ch;
+  padding: 8px 10px;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.invite {
+  color: var(--muted);
+  font-size: 0.95em;
+  word-break: break-all;
+}

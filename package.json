@@ -3,7 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "description": "A small dig site on your table, in passthrough AR on a Meta Quest 3: drive the excavator, dig, and heap up the earth. WebXR, three.js and Vite.",
-  "keywords": ["webxr", "augmented-reality", "threejs", "meta-quest", "pwa"],
+  "keywords": [
+    "webxr",
+    "augmented-reality",
+    "threejs",
+    "meta-quest",
+    "pwa"
+  ],
   "homepage": "https://ariamokr.github.io/arbuild/",
   "repository": {
     "type": "git",
@@ -27,7 +33,9 @@
     "test:e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {
-    "three": "^0.186.1"
+    "layersharedsession": "github:AriaMoKr/layersharedsession#v0.3.0",
+    "three": "^0.186.1",
+    "trystero": "0.26.0"
   },
   "devDependencies": {
     "@iwer/sem": "^2.5.0",

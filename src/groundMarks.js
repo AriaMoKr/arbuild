@@ -217,6 +217,7 @@ export class GroundMarks {
       length: mark.length ?? this.size[0],
       width: mark.width ?? this.size[1],
       tone: mark.tone ?? 0,
+      seq: ++this.sequence, // which mark this is, counting every one ever added
     };
     this.marks.push(m);
     if (this.marks.length > this.capacity) this.marks.shift();
@@ -231,15 +232,25 @@ export class GroundMarks {
 
   /** The marks, oldest first, as plain numbers. */
   state() {
-    return this.marks.map((m) => [round(m.x), round(m.z), round(m.yaw, 3), round(m.length), round(m.width), round(m.tone, 2)]);
+    return this.marks.map(toState);
+  }
+
+  /** The marks added after the one numbered `seq` (see `sequence`), as state() has them. */
+  since(seq) {
+    return this.marks.filter((m) => m.seq > seq).map(toState);
   }
 
   /** Puts back what state() gave (whatever doesn't make sense is skipped). */
   restore(state) {
     this.reset();
+    this.addMany(state);
+  }
+
+  /** Adds marks given as state() has them (a host's new ones); whatever doesn't make sense is skipped. */
+  addMany(state) {
     if (!Array.isArray(state)) return;
     for (const s of state.slice(-this.capacity)) {
-      if (!Array.isArray(s) || !s.every(Number.isFinite)) continue;
+      if (!Array.isArray(s) || s.length !== 6 || !s.every(Number.isFinite)) continue;
       const [x, z, yaw, length, width, tone] = s;
       this.add({ x, z, yaw, length, width, tone });
     }
@@ -248,6 +259,7 @@ export class GroundMarks {
   reset() {
     this.marks = [];
     this.cursor = 0;
+    this.sequence ??= 0; // keeps counting across resets, so `since` never repeats a mark
     this._m.makeScale(0, 0, 0);
     for (let i = 0; i < this.capacity; i++) {
       this.mesh.setMatrixAt(i, this._m);
@@ -275,6 +287,10 @@ export class GroundMarks {
 function round(value, digits = 1) {
   const f = 10 ** digits;
   return Math.round(value * f) / f;
+}
+
+function toState(m) {
+  return [round(m.x), round(m.z), round(m.yaw, 3), round(m.length), round(m.width), round(m.tone, 2)];
 }
 
 /** Tread marks: bars across the track, cut out (alpha-tested), dark earth. */

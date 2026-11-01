@@ -21,6 +21,14 @@
       <button id="enter-ar" type="button" disabled>Checking…</button>
       <p id="status" role="status" aria-live="polite" data-tone="info">Checking for WebXR support…</p>
 
+      <h2>Together</h2>
+      <p>Two headsets at one table can share the dig site: one starts a room (<b>Share</b> on the in-AR menu, or the button below), the other joins it with the room code. Whoever is pushing drives; both see the other's head and hands.</p>
+      <div class="share">
+        <button id="share" type="button">Share this dig site</button>
+        <form id="join-form" class="join"><label>Room code <input id="room-code" type="text" inputmode="text" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="k3vd-q8hn" /></label><button id="join" type="submit">Join</button></form>
+        <p id="invite" class="invite" hidden></p>
+      </div>
+
       <h2>Before you start</h2>
       <ol>
         <li>Your room scan needs a table. In the headset: <b>Settings › Physical space › Space setup</b>. Quest 3 usually finds tables by itself; if not, add one and label it <b>Table</b>.</li>
@@ -32,7 +40,7 @@
         <li>The dig site lands on the nearest table (preferring one in front of you), facing you. If it's out of view, the panel says which way to look. Each table keeps its own dig site, and it's all remembered for next time.</li>
         <li>Several tables? <b>Pull the trigger</b> or <b>pinch</b> to move to the next one. No table found? Pull the trigger or pinch to open Space Setup.</li>
         <li><b>Left thumbstick</b> drives the excavator, forwards and backwards along the way it faces; <b>right thumbstick</b> swings the cab. Hold <b>A</b> to dig: a scoop fills the bucket with earth and picks up a rock, and the dump drops them under the bucket. Hold <b>B</b> to repaint the excavator.</li>
-        <li>A small menu floats above your <b>left controller</b> (or left hand): point at it with the right one and pull the trigger for <b>Exit AR</b>, <b>Reload</b>, <b>Sound</b>, <b>Steering</b> (relative or absolute), <b>Reset</b> and <b>Look</b>.</li>
+        <li>A small menu floats above your <b>left controller</b> (or left hand): point at it with the right one and pull the trigger for <b>Exit AR</b>, <b>Reload</b>, <b>Sound</b>, <b>Steering</b> (relative or absolute), <b>Reset</b>, <b>Look</b>, <b>Share</b> and <b>Align</b>. Squeeze a grip to wave at the others in a shared room.</li>
       </ul>
     </main>
     <script type="module" src="/src/main.js"></script>

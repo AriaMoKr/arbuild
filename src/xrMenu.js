@@ -2,19 +2,20 @@ import * as THREE from 'three';
 
 // A small in-AR menu above the left controller (or the left hand): Exit AR, Reload page,
 // Sound on/off, Steering relative/absolute, Reset (the dig site as it started), Look
-// (diorama/plain), and when the app last changed. Point at it with
+// (diorama/plain), Share (a session with another headset) and Align (its frame), and when the
+// app last changed. Point at it with
 // the other hand's controller (or pinch ray); a ray shows where you're pointing, and the
 // trigger or a pinch presses the button. The browser's own controls are out of reach in AR,
 // which is why this exists.
 
 const CANVAS_W = 640;
-const CANVAS_H = 466;
+const CANVAS_H = 582;
 export const MENU_CANVAS = { width: CANVAS_W, height: CANVAS_H };
 const MENU_WIDTH_M = 0.18;
 const MENU_HEIGHT_M = (MENU_WIDTH_M * CANVAS_H) / CANVAS_W;
 const LIFT_M = 0.1; // how far above the holding hand the menu floats
 const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
-const VERSION_Y = 421; // the "Updated …" line, under the buttons
+const VERSION_Y = 537; // the "Updated …" line, under the buttons
 
 /** Button rectangles in canvas pixels (y down). Labels of sound and steering are set by setLabel(). */
 export const MENU_BUTTONS = [
@@ -24,6 +25,8 @@ export const MENU_BUTTONS = [
   { id: 'steering', label: 'Steering', x: 24, y: 160, w: 390, h: 100 },
   { id: 'reset', label: '↺ Reset', x: 428, y: 160, w: 188, h: 100 },
   { id: 'look', label: 'Look', x: 24, y: 276, w: 592, h: 100 },
+  { id: 'share', label: 'Share', x: 24, y: 392, w: 390, h: 100 }, // a shared session: label set by setLabel()
+  { id: 'align', label: 'Align', x: 428, y: 392, w: 188, h: 100 },
 ];
 
 /**
@@ -37,8 +40,8 @@ export function buttonAt(u, v, buttons = MENU_BUTTONS) {
 }
 
 export class XrMenu {
-  constructor({ onExit, onReload, onSound, onSteering, onReset, onLook }) {
-    this.actions = { exit: onExit, reload: onReload, sound: onSound, steering: onSteering, reset: onReset, look: onLook };
+  constructor({ onExit, onReload, onSound, onSteering, onReset, onLook, onShare, onAlign }) {
+    this.actions = { exit: onExit, reload: onReload, sound: onSound, steering: onSteering, reset: onReset, look: onLook, share: onShare, align: onAlign };
     this.labels = {};
     this.version = '';
     this.hovered = null;

@@ -92,12 +92,13 @@ async function launchBrowser() {
 }
 
 async function connect(profile, proc, shutdown) {
+  let port;
   let target;
   for (let i = 0; i < 75 && !target; i++) {
     await sleep(200);
     if (proc.exitCode !== null) throw new Error(`Browser exited early with code ${proc.exitCode}.`);
     try {
-      const port = fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0].trim();
+      port = fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0].trim();
       const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
       target = list.find((t) => t.type === 'page');
     } catch {
@@ -106,7 +107,28 @@ async function connect(profile, proc, shutdown) {
   }
   if (!target) throw new Error('Browser did not expose a DevTools target.');
 
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  const main = await attach(target.webSocketDebuggerUrl, async (send, ws) => {
+    await send('Browser.close').catch(() => {}); // graceful exit takes the child processes with it
+    ws.close();
+    await shutdown();
+  });
+  /** Another window of the same browser (a second headset in the shared session), with the same API; close() closes just it. */
+  main.openWindow = async () => {
+    const { targetId } = await main.send('Target.createTarget', { url: 'about:blank', newWindow: true });
+    const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const t = list.find((x) => x.id === targetId);
+    if (!t) throw new Error('The new window has no DevTools target.');
+    return attach(t.webSocketDebuggerUrl, async (send, ws) => {
+      await send('Page.close').catch(() => {});
+      ws.close();
+    });
+  };
+  return main;
+}
+
+/** A DevTools connection to one page: goto, evaluate, waitFor, screenshot and the rest. `close(send, ws)` ends it. */
+async function attach(wsUrl, close) {
+  const ws = new WebSocket(wsUrl);
   await new Promise((resolve, reject) => {
     ws.addEventListener('open', resolve, { once: true });
     ws.addEventListener('error', () => reject(new Error('DevTools connection failed.')), { once: true });
@@ -163,6 +185,7 @@ async function connect(profile, proc, shutdown) {
   return {
     problems,
     evaluate,
+    send,
     async goto(url) {
       problems.length = 0;
       await send('Page.navigate', { url });
@@ -217,9 +240,7 @@ async function connect(profile, proc, shutdown) {
       })()`);
     },
     async close() {
-      await send('Browser.close').catch(() => {}); // graceful exit takes the child processes with it
-      ws.close();
-      await shutdown();
+      await close(send, ws);
     },
   };
 }
@@ -1324,6 +1345,133 @@ const scenarios = {
     await browser.waitFor('!window.__app.snapshot().presenting', { label: 'session ended' });
     assertNoProblems(browser);
     return `${s.memory.sites} dig sites kept; tables 1 and 2 came back as left, before and after a reload`;
+  },
+
+  async 'two headsets share a dig site: whoever pushes drives, and both see the other'(browser, base) {
+    // Two windows, each an emulated Quest in the meeting room, in one room of the shared session
+    // (AriaMoKr/layersharedsession: peer to peer over WebRTC, found through public relays). It
+    // needs the internet; E2E_OFFLINE=1 skips it.
+    if (process.env.E2E_OFFLINE === '1') return 'skipped: E2E_OFFLINE';
+    await openApp(browser, base, 'emulate=1&env=meeting_room');
+    await enterAR(browser);
+    await browser.evaluate('window.__app.startShare()');
+    const room = await browser.waitFor('window.__app.snapshot().share.room', { label: 'a room started' });
+    await waitForDebugLog(new RegExp(`^\\[share\\] started room ${room}$`));
+
+    const other = await browser.openWindow();
+    try {
+      await other.goto(`${base}?emulate=1&env=meeting_room&room=${room}`);
+      await other.waitFor('window.__app && !document.getElementById("enter-ar").disabled', { label: 'the second window ready' });
+      const invite = await other.evaluate('(() => { const p = document.getElementById("invite"); return p.hidden ? null : p.textContent; })()');
+      if (!invite?.includes(room)) throw new Error(`the invited page doesn't show the room: ${invite}`);
+      await enterAR(other);
+      const fresh = await snapshot(other); // before anyone else is drawn
+      // They find each other through the relays: on one PC in under a second once the relays answer.
+      const connected = 'window.__app.snapshot().share.people.length === 1';
+      try {
+        await browser.waitFor(connected, { timeout: 30000, label: 'the first window sees the second' });
+        await other.waitFor(connected, { timeout: 10000, label: 'the second window sees the first' });
+      } catch (err) {
+        const share = await browser.evaluate('window.__app.snapshot().share');
+        throw new Error(`${err.message}; relays open: ${share.relays}. This needs the internet; E2E_OFFLINE=1 skips it.`);
+      }
+      // One is the host (the lower member id), the other follows its site; each sees the other here.
+      const [sa, sb] = [await snapshot(browser), await snapshot(other)];
+      if (sa.share.host !== sb.share.host) throw new Error(`they disagree on the host: ${sa.share.host} vs ${sb.share.host}`);
+      const [host, guest] = sa.share.isHost ? [browser, other] : [other, browser];
+      await guest.waitFor('window.__app.snapshot().share.following', { timeout: 10000, label: 'the guest follows the host' });
+      if ((await snapshot(host)).share.here !== 1 || (await snapshot(guest)).share.here !== 1) throw new Error('they are not both here');
+      // The other's avatar was compiled and uploaded before AR (warmUp), so showing it costs no new program or geometry.
+      const shown = await snapshot(other);
+      if (shown.programs > fresh.programs || shown.geometries > fresh.geometries) {
+        throw new Error(`the avatar added programs ${fresh.programs} → ${shown.programs}, geometries ${fresh.geometries} → ${shown.geometries}`);
+      }
+
+      // The host drives: the guest's excavator follows within a moment.
+      const drive = (page, ms, y = -1) =>
+        page.evaluate(`(async () => {
+          const l = window.__iwer.xrDevice.controllers.left;
+          l.updateAxes('thumbstick', 0, ${y});
+          await new Promise((r) => setTimeout(r, ${ms}));
+          l.updateAxes('thumbstick', 0, 0);
+          await new Promise((r) => setTimeout(r, 700));
+        })()`);
+      const at = async (page) => (await snapshot(page)).excavator.onTable;
+      const apart = (p, q) => Math.hypot(p.x - q.x, p.z - q.z);
+      const before = await at(guest);
+      await drive(host, 800);
+      const hostAt = await at(host);
+      await sleep(400);
+      const moved = apart(hostAt, before);
+      if (!(moved > 0.05)) throw new Error(`the host's excavator moved only ${moved.toFixed(3)} m`);
+      const lag = apart(hostAt, await at(guest));
+      if (lag > 0.02) throw new Error(`the guest's excavator is ${lag.toFixed(3)} m from the host's`);
+
+      // The guest pushes: the input goes over, the host's excavator moves, and the guest sees it move.
+      await drive(guest, 800);
+      const hostAfter = await at(host);
+      const pushed = apart(hostAfter, hostAt);
+      if (!(pushed > 0.05)) throw new Error(`the guest's push moved the host's excavator only ${pushed.toFixed(3)} m`);
+      await sleep(400);
+      if (apart(hostAfter, await at(guest)) > 0.02) throw new Error('the guest fell behind after its own push');
+
+      // The tracks and dirt are the host's too: the guest has the same. One who leaves AR and
+      // comes back (like one who joins from the page and enters AR later) gets every mark made
+      // meanwhile: the host backs up while the guest is out.
+      const marksOf = async (page) => (await snapshot(page)).marks;
+      const sameMarks = async (what) => {
+        let want;
+        let got;
+        for (let i = 0; i < 25; i++) {
+          [want, got] = [await marksOf(host), await marksOf(guest)];
+          if (want.tracks === got.tracks && want.spills === got.spills) return want;
+          await sleep(200);
+        }
+        throw new Error(`${what}: the guest has ${got.tracks} track and ${got.spills} dirt marks, the host ${want.tracks} and ${want.spills}`);
+      };
+      await sameMarks("the guest doesn't have the host's marks");
+      await guest.evaluate('window.__app.endAR()');
+      await guest.waitFor('!window.__app.snapshot().presenting', { label: 'the guest out of AR' });
+      const tracksBefore = (await marksOf(host)).tracks;
+      await drive(host, 800, 1);
+      if (!((await marksOf(host)).tracks > tracksBefore)) throw new Error('backing up left no tracks');
+      await enterAR(guest);
+      await guest.waitFor('window.__app.snapshot().share.following', { timeout: 10000, label: 'the guest follows again' });
+      const marks = await sameMarks('back in AR, the guest is missing marks the host made meanwhile');
+
+      // Each is drawn where they stand: the two step to either long side of the table and face
+      // each other, and the guest's drawing of the host's head is where the host's headset is
+      // (both scanned the same room, so their frames agree without Align).
+      const stand = (page, [x, y, z], yawDeg, pitchDeg) =>
+        page.evaluate(`(() => {
+          const d = window.__iwer.xrDevice;
+          d.position.set(${x}, ${y}, ${z});
+          const yaw = ${yawDeg} * Math.PI / 180, pitch = ${pitchDeg} * Math.PI / 180;
+          const cy = Math.cos(yaw / 2), sy = Math.sin(yaw / 2), cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
+          d.quaternion.set(cy * sp, sy * cp, -sy * sp, cy * cp);
+        })()`);
+      const [sx, , sz] = (await snapshot(host)).site.position;
+      await stand(host, [sx + 0.9, 1.45, sz], 90, -25);
+      await stand(guest, [sx - 0.9, 1.4, sz], -90, -22);
+      await sleep(1500);
+      const hostHead = await host.evaluate('(() => { const p = window.__iwer.xrDevice.position; return [p.x, p.y, p.z]; })()');
+      const drawn = (await snapshot(guest)).share.avatars;
+      if (drawn.length !== 1) throw new Error(`the guest draws ${drawn.length} heads`);
+      const off = Math.hypot(...drawn[0].map((v, i) => v - hostHead[i]));
+      if (off > 0.03) throw new Error(`the host's head is drawn ${off.toFixed(3)} m from the host's headset`);
+      const shot = await guest.screenshot('shared-guest-view');
+
+      // Leaving: the other is alone again, and the guest runs its own site once more.
+      await guest.evaluate('window.__app.stopShare()');
+      await host.waitFor('window.__app.snapshot().share.people.length === 0', { timeout: 10000, label: 'the host is alone' });
+      await guest.waitFor('!window.__app.snapshot().share.active && !window.__app.snapshot().share.following', { label: 'the guest left' });
+      await host.evaluate('window.__app.stopShare()');
+      assertNoProblems(browser);
+      assertNoProblems(other);
+      return `room ${room}: the host moved ${moved.toFixed(2)} m and the guest followed within 2 cm, then drove the host's excavator ${pushed.toFixed(2)} m; the guest had all ${marks.tracks} track marks after leaving AR and coming back; the host's head drawn ${(off * 1000).toFixed(0)} mm from it; ${shot}`;
+    } finally {
+      await other.close();
+    }
   },
 
   async 'other rooms: dig site stands on a table top'(browser, base) {

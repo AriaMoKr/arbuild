@@ -77,7 +77,7 @@ def png(size, rounded):
 
 
 OUT.mkdir(parents=True, exist_ok=True)
-(OUT / "icon.svg").write_text(svg(512), encoding="utf-8")
+(OUT / "icon.svg").write_text(svg(512), encoding="utf-8", newline="\n")
 for name, size, rounded in [("icon-192.png", 192, True), ("icon-512.png", 512, True), ("icon-maskable-512.png", 512, False), ("apple-touch-icon.png", 180, False)]:
     png(size, rounded).save(OUT / name)
     print(f"public/icons/{name}  {size}x{size}")

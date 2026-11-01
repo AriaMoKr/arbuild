@@ -172,3 +172,23 @@ test('heaps round-trip their state, skipping nonsense; every slot is drawn, empt
   copy.reset();
   assert.equal(copy.count, 0);
 });
+
+test('marks are numbered, so a host can send only the new ones; addMany takes them on the other side', () => {
+  const marks = new GroundMarks({ capacity: 4, material: new THREE.MeshBasicMaterial(), y: 0.3, size: [30, 34] });
+  marks.add({ x: 1, z: 0 });
+  marks.add({ x: 2, z: 0 });
+  const sent = marks.sequence;
+  assert.equal(sent, 2);
+  marks.add({ x: 3, z: 0 });
+  assert.deepEqual(marks.since(sent).map((m) => m[0]), [3]);
+  assert.deepEqual(marks.since(0).map((m) => m[0]), [1, 2, 3]);
+  marks.reset();
+  marks.add({ x: 4, z: 0 });
+  assert.equal(marks.sequence, 4, 'counting on across a reset');
+  assert.deepEqual(marks.since(sent).map((m) => m[0]), [4]);
+
+  const other = new GroundMarks({ capacity: 4, material: new THREE.MeshBasicMaterial(), y: 0.3, size: [30, 34] });
+  other.addMany(marks.since(0));
+  other.addMany([[1, 2, 3], 'x', [9, 9, 0, 30, 34, 0]]);
+  assert.deepEqual(other.state().map((m) => m[0]), [4, 9]);
+});

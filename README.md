@@ -59,11 +59,21 @@ The dig site goes on the nearest table, preferring one in front of you when it's
 | Coming back later | Each table keeps its own dig site: the excavator's place and arm, the rocks and the worker. Switch to another table and back, and the first one is as you left it (the panel says "Your dig site is back"); a table you haven't used starts fresh. Next time you enter AR, the site goes back on the table you used last, also after you've taken the headset off for a while. Up to 6 tables are remembered. **↺ Reset** on the menu starts the current table afresh. The paint colour is one for all. |
 | Tracks, dirt and heaps | In the diorama look the excavator leaves tyre tracks where it drives, a dug patch where the bucket scoops and dirt where a rock lands, on its patch of ground or on the bare table. Dumped earth piles up into heaps: dump on the same spot and the heap grows, scoop at a heap and it shrinks, drive through one and it's flattened. It's all kept with the table's dig site. Anything lying on the table, a controller say, shows through the dirt. |
 | **Look** on the menu | Switches between the diorama (the default) and the plain look, with everything on the site kept. Remembered in this browser. |
+| **Share** on the menu | Starts a shared room (or leaves it): the room's code goes into the page's address and onto the panel, and another headset that opens the page with `?room=<code>` (or types the code into **Room code** on the page) joins. Both at one table see the other's head and hands, the one with the lowest id runs the site and the other follows it, and whoever is pushing a stick or holding A drives. Squeeze a grip to wave. See "Together" below. |
+| **Align** on the menu | When the other headset's head and hands show up in the wrong place: both of you touch the same corner of the table with the right controller and pull its trigger. |
 | **Sound off / Sound on** on the menu | Turns the dig site's sound on or off. It starts off, and your choice is remembered in this browser. |
 | The menu above your left controller (or left hand) | Point at it with the right controller (or pinch with your right hand) and pull the trigger: **Exit AR** ends the session, **↻ Reload** reloads the app, **Sound** turns the sound on or off, **Steering** switches between relative and absolute steering (remembered too), **↺ Reset** puts the dig site back as it started, **Look** switches between the diorama and the plain look. Reload is handy after a code change, since the browser's own controls are out of reach in AR. Its bottom line shows when the app's files last changed ("Updated …"), the same as under the title on the page, so you can tell whether the headset is running the latest version. |
 | Pinch does nothing | Use a controller trigger, or allow hand tracking from the same site-info icon and reload. |
 
 To leave AR, use **Exit AR** on the menu above your left hand, or press the Meta button: Quest Browser shows controls near the address bar to resume or quit the immersive session. If something prevented the dig site from appearing, the page repeats what to fix after you leave AR.
+
+## Together
+
+Two headsets at one table can share the dig site, through the Hallway's shared session ([AriaMoKr/layersharedsession](https://github.com/AriaMoKr/layersharedsession), peer to peer over WebRTC, found through public relays: no server to run). **Share** on the in-AR menu, or **Share this dig site** on the page, starts a room; the room's code is in the page's address (`?room=k3vd-q8hn`) and on the panel. The other headset opens the page with that `?room=`, or types the code into **Room code** on the page. The page also shows the invite link to copy.
+
+In the room, each headset sends where its head and hands are, in the dig site's frame on the table, and draws the others' as the Hallway does (a head, hands, a name). The member with the lowest id is the host: it runs the site and sends it 15 times a second, and the others show that; everyone's sticks and buttons go to the host, so whoever is pushing drives the one excavator. If the host leaves, the next lowest takes over. A guest's Reset does nothing; the host's resets everyone. The room is shared with the other sites on the origin, so a visitor in the Hallway's same room counts as "elsewhere".
+
+Two headsets scan the same table differently: each sees its edges turned by some quarter turn, and each placed the site facing itself. So the other's head may show up turned a quarter round the table. **Align** fixes it: both touch the same corner of the table with the right controller and pull its trigger, and from then on both frames agree. In the emulator (and when two scans happen to agree) it isn't needed.
 
 ## Developing without a headset
 
@@ -90,7 +100,7 @@ npm test          # unit tests for the table geometry and selection logic
 npm run test:e2e  # headless Chrome + emulator: checks the dig site lands on the right tables
 ```
 
-`test:e2e` needs Chrome or Edge installed (set `CHROME_PATH` if it isn't found) and writes screenshots to `e2e-output/`. `E2E_ONLY=depth npm run test:e2e` runs only the scenarios whose names contain "depth".
+`test:e2e` needs Chrome or Edge installed (set `CHROME_PATH` if it isn't found) and writes screenshots to `e2e-output/`. The shared-session scenario opens two windows that find each other through the public relays, so it needs the internet; `E2E_OFFLINE=1` skips it. `E2E_ONLY=depth npm run test:e2e` runs only the scenarios whose names contain "depth".
 
 ## How it works
 
@@ -127,6 +137,9 @@ src/styles.js           the looks: diorama and plain, and sketches of five other
 src/groundMarks.js      tyre tracks, dug patches, dirt and heaps of earth left on the table
 src/worker.js           the worker watching the excavator and keeping out of its way (pure, unit-tested)
 src/placementMemory.js  remembering a dig site per table between sessions, with persistent anchors
+src/multiplayer.js      the shared session (AriaMoKr/layersharedsession) in the dig site's frame, the host's site and the guests' input
+src/sharedFrame.js      the frame two headsets agree on, the host election, merged inputs (pure, unit-tested)
+src/presence.js         the session in words, for the panel and the page (pure)
 src/siteSound.js        engine, hydraulics and rock sounds, made with WebAudio and placed at the excavator
 src/occlusion.js        soft depth occlusion added to the dig site's materials
 src/tableLocator.js     table detection maths and table selection (pure, unit-tested)
